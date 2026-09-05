@@ -1,0 +1,9 @@
+node_modules/
+dist/
+coverage/
+
+# Never commit provider credentials or local environment overrides.
+.env
+.env.*
+
+.DS_Store

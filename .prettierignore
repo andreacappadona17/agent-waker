@@ -1,0 +1,3 @@
+# Prettier already skips everything in .gitignore. Only the lockfile needs
+# listing: it is tracked, and formatting it fights pnpm's own output.
+pnpm-lock.yaml
