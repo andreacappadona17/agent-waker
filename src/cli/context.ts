@@ -6,7 +6,8 @@
  * context and the tests never touch the real home directory.
  */
 
-import { readFile } from "node:fs/promises";
+import { mkdir, readFile } from "node:fs/promises";
+import { join } from "node:path";
 
 import { createClaudeAdapter } from "#src/adapters/claude.js";
 import { createCodexAdapter } from "#src/adapters/codex.js";
@@ -20,6 +21,7 @@ import {
   type AgentWakerConfig,
 } from "#src/config/config.js";
 import { resolvePaths, type Paths } from "#src/cli/paths.js";
+import { AGENT_IDS } from "#src/core/agent.js";
 import type { Instant } from "#src/core/time.js";
 import { createEventLog, type EventLog } from "#src/logging/log.js";
 import {
@@ -89,6 +91,16 @@ export async function openContext(
   }
 
   const config = parseConfig(source, paths.config);
+
+  // Providers are spawned with this as their working directory. Spawning into
+  // a directory that does not exist fails with ENOENT, which is
+  // indistinguishable from a missing executable, so it is created before any
+  // adapter runs. One per agent, so neither can see what the other left.
+  await mkdir(paths.workDir, { recursive: true });
+
+  for (const agentId of AGENT_IDS) {
+    await mkdir(join(paths.workDir, agentId), { recursive: true });
+  }
 
   return {
     environment,

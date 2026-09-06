@@ -1,4 +1,11 @@
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import {
+  mkdir,
+  mkdtemp,
+  readFile,
+  rm,
+  stat,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -99,6 +106,9 @@ const invoke = async (
 
 const stateFile = (): Promise<string> =>
   readFile(join(home, ".local", "state", "agent-waker", "state.json"), "utf8");
+
+const configFile = (): Promise<string> =>
+  readFile(join(home, ".config", "agent-waker", "config.yaml"), "utf8");
 
 describe("help", () => {
   it("is what an empty command line gets", async () => {
@@ -353,5 +363,304 @@ describe("status", () => {
     const { out } = await invoke(["status"], { env: { LANG: "C" } });
 
     expect(/^[ -~\n]*$/.test(out)).toBe(true);
+  });
+});
+
+describe("the working directory providers run in", () => {
+  it("exists before any adapter is asked to run", async () => {
+    // Spawning into a directory that is not there fails with ENOENT, which
+    // looks exactly like a missing executable. Every command was reporting
+    // every agent as signed out until this was created.
+    await writeConfig();
+    await invoke(["status"]);
+
+    for (const agentId of ["claude", "codex"]) {
+      await expect(
+        stat(join(home, ".cache", "agent-waker", "work", agentId)),
+      ).resolves.toBeDefined();
+    }
+  });
+});
+
+describe("detect", () => {
+  it("lists what is installed and how it is authenticated", async () => {
+    await writeConfig();
+
+    const { code, out } = await invoke(["detect"]);
+
+    expect(code).toBe(EXIT.ok);
+    expect(out).toContain("Supported coding agents");
+    expect(out).toContain("Fake claude");
+    expect(out).toContain("healthy");
+    expect(out).toContain("subscription");
+  });
+
+  it("changes nothing", async () => {
+    // A diagnostic that repairs things cannot be trusted to report state.
+    await writeConfig();
+    await invoke(["detect"]);
+
+    await expect(stateFile()).rejects.toThrow();
+  });
+
+  it("says when an agent is not installed", async () => {
+    await writeConfig();
+
+    const { code, out } = await invoke(["detect"], {
+      scripts: { codex: { detect: [{ installed: false, health: "unknown" }] } },
+    });
+
+    expect(code).toBe(EXIT.partial);
+    expect(out).toContain("not installed");
+  });
+
+  it("separates a found-but-unrunnable install from a missing one", async () => {
+    await writeConfig();
+
+    const { out } = await invoke(["detect"], {
+      scripts: {
+        codex: {
+          detect: [
+            { installed: true, health: "broken", executable: "/usr/bin/codex" },
+          ],
+        },
+      },
+    });
+
+    expect(out).toContain("found, but will not run");
+  });
+
+  it("names an API key as unusable rather than as signed in", async () => {
+    await writeConfig();
+
+    const { code, out } = await invoke(["detect"], {
+      scripts: {
+        codex: {
+          auth: [
+            { authenticated: true, mode: "api_key", supportsIntent: false },
+          ],
+        },
+      },
+    });
+
+    expect(code).toBe(EXIT.partial);
+    expect(out).toContain("cannot be used for subscription activation");
+  });
+});
+
+describe("logs", () => {
+  it("says so when there is nothing yet", async () => {
+    await writeConfig();
+
+    const { code, out } = await invoke(["logs"]);
+
+    expect(code).toBe(EXIT.ok);
+    expect(out).toContain("No events yet");
+  });
+
+  it("shows what happened", async () => {
+    await writeConfig();
+    await invoke(["tick"], { now: at("07:00") });
+
+    const { out } = await invoke(["logs"]);
+
+    expect(out).toContain("scheduler.tick");
+    expect(out).toContain("agent.activated");
+    expect(out).toContain("07:00");
+  });
+
+  it("takes a limit", async () => {
+    await writeConfig();
+    await invoke(["tick"], { now: at("07:00") });
+
+    const { out } = await invoke(["logs", "--limit", "1"]);
+
+    expect(out.trim().split("\n")).toHaveLength(1);
+  });
+
+  it("refuses a limit that is not a number", async () => {
+    await writeConfig();
+
+    expect((await invoke(["logs", "--limit", "lots"])).code).toBe(EXIT.usage);
+  });
+
+  it("strips control characters out of provider text", async () => {
+    // A log line is untrusted content on its way to a terminal.
+    await writeConfig();
+    await invoke(["tick"], {
+      now: at("07:00"),
+      scripts: {
+        codex: {
+          probe: [
+            {
+              kind: "unknown",
+              detail: "\u001b[2Jcleared your screen",
+            },
+          ],
+        },
+      },
+    });
+
+    const { out } = await invoke(["logs"]);
+
+    expect(out).toContain("cleared your screen");
+    expect(out).not.toMatch(ANSI);
+  });
+});
+
+describe("schedule set", () => {
+  it("changes the time and says what changed", async () => {
+    await writeConfig();
+
+    const { code, out } = await invoke(["schedule", "set", "06:45"]);
+
+    expect(code).toBe(EXIT.ok);
+    expect(out).toContain("from  07:00");
+    expect(out).toContain("to    06:45");
+    expect((await invoke(["status"])).out).toContain(
+      "Desired activation: 06:45",
+    );
+  });
+
+  it("can change the timezone at the same time", async () => {
+    await writeConfig();
+    await invoke([
+      "schedule",
+      "set",
+      "06:45",
+      "--timezone",
+      "America/New_York",
+    ]);
+
+    expect((await invoke(["status"])).out).toContain("America/New_York");
+  });
+
+  it("keeps the comments in the file", async () => {
+    await writeConfig("# my notes\nversion: 1\ntimezone: Europe/Rome\n");
+    await invoke(["schedule", "set", "06:45"]);
+
+    expect(await configFile()).toContain("# my notes");
+  });
+
+  it("keeps the previous version alongside", async () => {
+    await writeConfig();
+    await invoke(["schedule", "set", "06:45"]);
+
+    expect(
+      await readFile(
+        join(home, ".config", "agent-waker", "config.yaml.bak"),
+        "utf8",
+      ),
+    ).toContain("version: 1");
+  });
+
+  it("refuses a time that is not a time, without touching the file", async () => {
+    await writeConfig();
+
+    const before = await configFile();
+    const { code } = await invoke(["schedule", "set", "quarter past seven"]);
+
+    expect(code).toBe(EXIT.failed);
+    expect(await configFile()).toBe(before);
+  });
+
+  it("refuses a timezone that is not one", async () => {
+    await writeConfig();
+
+    expect(
+      (await invoke(["schedule", "set", "07:00", "--timezone", "Europe/Roma"]))
+        .code,
+    ).toBe(EXIT.failed);
+  });
+
+  it("asks for a time when none was given", async () => {
+    await writeConfig();
+
+    const { code, err } = await invoke(["schedule", "set"]);
+
+    expect(code).toBe(EXIT.usage);
+    expect(err).toContain("07:00");
+  });
+
+  it("refuses a schedule subcommand it does not have", async () => {
+    await writeConfig();
+
+    expect((await invoke(["schedule", "clear"])).code).toBe(EXIT.usage);
+  });
+});
+
+describe("enable and disable", () => {
+  it("leaves a disabled agent out of the daily cycle", async () => {
+    await writeConfig();
+
+    const { code, out } = await invoke(["disable", "codex"]);
+
+    expect(code).toBe(EXIT.ok);
+    expect(out).toContain("Fake codex disabled");
+    expect(out).toContain("agent-waker enable codex");
+
+    await invoke(["tick"], { now: at("07:00") });
+
+    const parsed = JSON.parse(await stateFile()) as {
+      agents: Record<string, { phase: string }>;
+    };
+
+    expect(parsed.agents.claude?.phase).toBe("activated");
+    expect(parsed.agents.codex?.phase).toBe("idle");
+  });
+
+  it("keeps what already happened, so status still explains itself", async () => {
+    await writeConfig();
+    await invoke(["tick"], { now: at("07:00") });
+    await invoke(["disable", "codex"]);
+
+    const { out } = await invoke(["status"], { now: at("09:00") });
+
+    expect(out).toContain("Disabled");
+    expect(out).toContain("today 07:00");
+  });
+
+  it("brings an agent back", async () => {
+    await writeConfig();
+    await invoke(["disable", "codex"]);
+
+    expect((await invoke(["enable", "codex"])).out).toContain(
+      "Fake codex enabled",
+    );
+    expect(await configFile()).toContain("enabled: true");
+  });
+
+  it("asks which agent when none was named", async () => {
+    await writeConfig();
+
+    const { code, err } = await invoke(["disable"]);
+
+    expect(code).toBe(EXIT.usage);
+    expect(err).toContain("agent-waker disable codex");
+  });
+});
+
+describe("unknown options", () => {
+  it("are refused rather than ignored", async () => {
+    await writeConfig();
+
+    const { code, err } = await invoke(["status", "--verbose"]);
+
+    expect(code).toBe(EXIT.usage);
+    expect(err).toContain("--verbose");
+  });
+
+  it("say so when a value is missing", async () => {
+    await writeConfig();
+
+    const { code, err } = await invoke([
+      "schedule",
+      "set",
+      "07:00",
+      "--timezone",
+    ]);
+
+    expect(code).toBe(EXIT.usage);
+    expect(err).toContain("needs a value");
   });
 });

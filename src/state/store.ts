@@ -8,10 +8,11 @@
  * tick takes an advisory lock and a second one declines rather than racing.
  */
 
-import { copyFile, mkdir, open, readFile, rename, rm } from "node:fs/promises";
+import { mkdir, open, readFile, rm } from "node:fs/promises";
 import { join } from "node:path";
 
 import { emptyState, type AgentWakerState } from "#src/core/state.js";
+import { writeAtomic } from "#src/state/atomic.js";
 import { decodeState, encodeState } from "#src/state/codec.js";
 import type { Instant } from "#src/core/time.js";
 
@@ -134,31 +135,11 @@ export function createStateStore(directory: string): StateStore {
   };
 
   const save = async (state: AgentWakerState): Promise<void> => {
-    await mkdir(directory, { recursive: true, mode: DIRECTORY_MODE });
-
-    // Unique per process so two runs cannot scribble on the same scratch file.
-    const temporaryPath = `${statePath}.${String(process.pid)}.tmp`;
-    const text = `${JSON.stringify(encodeState(state), null, 2)}\n`;
-
-    const handle = await open(temporaryPath, "w", FILE_MODE);
-
-    try {
-      await handle.writeFile(text, "utf8");
-      // The rename below is atomic, but only useful if the bytes it points at
-      // have actually reached the disk.
-      await handle.sync();
-    } finally {
-      await handle.close();
-    }
-
-    // Best effort, and deliberately before the rename: a torn backup is caught
-    // by decoding, whereas a missing state.json would look like a first run.
-    await copyFile(statePath, backupPath).catch(() => undefined);
-
-    // ponytail: the directory entry itself is not fsynced. Losing the rename in
-    // a power cut costs one redundant activation, which is the same price the
-    // corrupt-file path already pays. Add it if state ever gets expensive.
-    await rename(temporaryPath, statePath);
+    await writeAtomic(
+      statePath,
+      `${JSON.stringify(encodeState(state), null, 2)}\n`,
+      { mode: FILE_MODE, directoryMode: DIRECTORY_MODE, backupPath },
+    );
   };
 
   const readLock = async (): Promise<LockFile | undefined> => {

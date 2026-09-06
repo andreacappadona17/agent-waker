@@ -12,6 +12,8 @@
  * observation vocabulary the policy speaks.
  */
 
+import { join } from "node:path";
+
 import type { AdapterRegistry } from "#src/adapters/registry.js";
 import type {
   AuthResult,
@@ -234,7 +236,8 @@ export async function tick(
 
       const observation = await observe(registry.get(agentId), {
         runner: context.runner,
-        workDir: context.workDir,
+        // Its own directory, so one provider cannot read what another left.
+        workDir: join(context.workDir, agentId),
         now,
       });
       const next = applyObservation(effective, rolled, observation, now);
