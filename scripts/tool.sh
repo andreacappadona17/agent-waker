@@ -15,10 +15,12 @@ set -eu
 case "${1-}" in
 # renovate: datasource=docker depName=ghcr.io/gitleaks/gitleaks
 gitleaks) image="ghcr.io/gitleaks/gitleaks:v8.30.1@sha256:c00b6bd0aeb3071cbcb79009cb16a60dd9e0a7c60e2be9ab65d25e6bc8abbb7f" ;;
+# renovate: datasource=docker depName=docker.io/rhysd/actionlint
+actionlint) image="docker.io/rhysd/actionlint:1.7.12@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667" ;;
 # renovate: datasource=docker depName=ghcr.io/anchore/syft
 syft) image="ghcr.io/anchore/syft:v1.51.1@sha256:95fe0835e5bebc6f8b1f8acef68d47d63d594ef4c0f25c097ff853b23cbac74c" ;;
 *)
-  echo "usage: ./scripts/tool.sh <gitleaks|syft> [args...]" >&2
+  echo "usage: ./scripts/tool.sh <gitleaks|actionlint|syft> [args...]" >&2
   exit 2
   ;;
 esac

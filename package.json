@@ -41,6 +41,7 @@
     "test": "vitest run",
     "test:coverage": "vitest run --coverage",
     "lint": "eslint .",
+    "lint:workflows": "./scripts/tool.sh actionlint -color && ./scripts/check-action-pins.sh",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "scan:secrets": "./scripts/tool.sh gitleaks git --redact --no-banner",

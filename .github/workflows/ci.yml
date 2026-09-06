@@ -1,0 +1,98 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  verify:
+    # Avoid punctuation that is awkward to retype: these names are what branch
+    # protection matches on, character for character.
+    name: Verify (Node ${{ matrix.node }}, ${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        # 24 is the supported baseline (package.json engines), 26 is current.
+        # macOS is a first-class target: the launchd scheduler only runs there.
+        os: [ubuntu-latest, macos-latest]
+        node: ["24", "26"]
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up toolchain
+        uses: ./.github/actions/setup
+        with:
+          node-version: ${{ matrix.node }}
+
+      # One command, not a copy of its steps. `pnpm run` echoes each sub-script
+      # as it starts, so the failing one is still named in the log, and the
+      # ordering inside `verify` (build cleans before tests) cannot be broken
+      # by editing this file.
+      - name: Verify
+        run: pnpm run verify
+
+  lint-workflows:
+    name: Lint workflows
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up toolchain
+        uses: ./.github/actions/setup
+
+      - name: Lint GitHub Actions workflows
+        run: pnpm run lint:workflows
+
+  code-quality:
+    name: Code quality (SonarQube)
+    # Opt-in: set repository variable SONAR_ENABLED=true and add SONAR_TOKEN.
+    # The fork check matters: repository variables resolve in the base-repo
+    # context, so without it every pull request from a fork would run this job
+    # with an empty token and fail.
+    if: >-
+      vars.SONAR_ENABLED == 'true' &&
+      github.event.pull_request.head.repo.fork != true
+    needs: verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # Sonar needs full history to attribute issues to the right commits.
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Set up toolchain
+        uses: ./.github/actions/setup
+
+      # Regenerating coverage here is cheaper than an artifact round-trip
+      # between jobs, and removes a silent failure mode when the matrix changes.
+      - name: Generate coverage
+        run: pnpm run test:coverage
+
+      - name: SonarQube scan
+        uses: SonarSource/sonarqube-scan-action@22918119ff8e1ca75a623e15c8296b6ea4fbe28f # v8.2.1
+        with:
+          # Pinned explicitly: without it the scanner takes the host from the
+          # checked-out sonar-project.properties, which a branch can change.
+          args: -Dsonar.host.url=${{ vars.SONAR_HOST_URL || 'https://sonarcloud.io' }}
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}

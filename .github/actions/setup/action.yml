@@ -1,0 +1,32 @@
+name: Set up toolchain
+description: Installs Node.js, pnpm and dependencies for agent waker.
+
+inputs:
+  node-version:
+    description: Node.js version. Defaults to the baseline in .nvmrc.
+    required: false
+    default: ""
+
+# The repository must already be checked out: a local composite action cannot
+# check out the repository that contains it.
+runs:
+  using: composite
+  steps:
+    - name: Set up pnpm
+      uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+
+    - name: Set up Node.js
+      uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      with:
+        # An empty node-version falls through to node-version-file, keeping
+        # .nvmrc the single source of the supported baseline.
+        node-version: ${{ inputs.node-version }}
+        node-version-file: .nvmrc
+        cache: pnpm
+
+    # --frozen-lockfile validates the lockfile rather than regenerating it, and
+    # re-checks the release-age policy in pnpm-workspace.yaml. Do not drop this
+    # step: `pnpm run <script>` would then auto-install WITHOUT those guarantees.
+    - name: Install dependencies
+      shell: bash
+      run: pnpm install --frozen-lockfile
