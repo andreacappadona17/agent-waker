@@ -664,3 +664,146 @@ describe("unknown options", () => {
     expect(err).toContain("needs a value");
   });
 });
+
+describe("doctor", () => {
+  it("reports a healthy machine as healthy", async () => {
+    await writeConfig();
+
+    const { code, out } = await invoke(["doctor"]);
+
+    expect(out).toContain("agent waker doctor");
+    expect(out).toContain("configuration is valid");
+    expect(out).toContain("subscription authentication detected");
+    // The scheduler is not installed in this fixture, so it is not healthy.
+    expect(code).toBe(EXIT.partial);
+    expect(out).toContain("1 thing needs attention");
+  });
+
+  it("counts more than one problem in the plural", async () => {
+    await writeConfig();
+
+    const { out } = await invoke(["doctor"], {
+      scripts: { codex: { detect: [{ installed: false, health: "unknown" }] } },
+    });
+
+    expect(out).toContain("2 things need attention");
+  });
+
+  it("names a failed check by the problem, not by the hope", async () => {
+    await writeConfig();
+
+    expect((await invoke(["doctor"])).out).toContain(
+      "scheduler is not installed",
+    );
+  });
+
+  it("says nothing is waking it when the scheduler is missing", async () => {
+    await writeConfig();
+
+    const { out } = await invoke(["doctor"]);
+
+    expect(out).toContain("Nothing is waking agent waker");
+    expect(out).toContain("agent-waker init");
+  });
+
+  it("can be asked about one agent", async () => {
+    await writeConfig();
+
+    const { out } = await invoke(["doctor", "codex"]);
+
+    expect(out).toContain("Fake codex");
+    expect(out).not.toContain("Fake claude");
+    // Asked about an agent, it answers about that agent.
+    expect(out).not.toContain("Scheduler");
+  });
+
+  it("changes nothing", async () => {
+    await writeConfig();
+
+    const before = await configFile();
+
+    await invoke(["doctor"]);
+
+    expect(await configFile()).toBe(before);
+  });
+
+  it("separates a wrapper that will not start from a missing install", async () => {
+    await writeConfig();
+
+    const { out } = await invoke(["doctor", "codex"], {
+      scripts: {
+        codex: {
+          detect: [
+            { installed: true, health: "broken", executable: "/usr/bin/codex" },
+          ],
+        },
+      },
+    });
+
+    expect(out).toContain("could not start");
+    expect(out).toContain("/usr/bin/codex");
+    expect(out).toContain("Reinstall through an official method");
+  });
+
+  it("refuses to offer a way around a security control", async () => {
+    // macOS removing part of an install is a real case, and working around it
+    // is not agent waker's business.
+    await writeConfig();
+
+    const { out } = await invoke(["doctor", "codex"], {
+      scripts: {
+        codex: {
+          detect: [
+            { installed: true, health: "broken", executable: "/usr/bin/codex" },
+          ],
+        },
+      },
+    });
+
+    expect(out).toContain("will not restore the installation or bypass");
+  });
+
+  it("tells a signed-out user where to sign in", async () => {
+    await writeConfig();
+
+    const { out } = await invoke(["doctor", "claude"], {
+      scripts: {
+        claude: {
+          auth: [{ authenticated: false, mode: "none", supportsIntent: false }],
+        },
+      },
+    });
+
+    expect(out).toContain("not authenticated");
+    expect(out).toContain("sign in with your subscription");
+  });
+
+  it("explains an API key as a mismatch rather than a fault", async () => {
+    await writeConfig();
+
+    const { code, out } = await invoke(["doctor", "claude"], {
+      scripts: {
+        claude: {
+          auth: [
+            { authenticated: true, mode: "api_key", supportsIntent: false },
+          ],
+        },
+      },
+    });
+
+    expect(code).toBe(EXIT.partial);
+    expect(out).toContain("API-key authentication detected");
+    expect(out).toContain("bill separately per token");
+  });
+
+  it("says an agent that is not installed is not installed", async () => {
+    await writeConfig();
+
+    const { out } = await invoke(["doctor", "codex"], {
+      scripts: { codex: { detect: [{ installed: false, health: "unknown" }] } },
+    });
+
+    expect(out).toContain("is not installed");
+    expect(out).not.toContain("could not start");
+  });
+});

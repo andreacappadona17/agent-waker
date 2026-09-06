@@ -14,6 +14,7 @@ import {
   type CliEnvironment,
 } from "#src/cli/context.js";
 import { detectCommand } from "#src/cli/detect.js";
+import { doctorCommand } from "#src/cli/doctor.js";
 import { EXIT, type ExitCode } from "#src/cli/exit.js";
 import { logsCommand } from "#src/cli/logs.js";
 import { scheduleSetCommand, setEnabledCommand } from "#src/cli/schedule.js";
@@ -28,6 +29,7 @@ Usage:
 
 Commands:
   status                  What each agent is doing, and what happens next
+  doctor [agent...]       Check everything, and say what to do about it
   detect                  What is installed, and whether it can be used
   tick                    Run one scheduling pass; the scheduler calls this
   run [agent...]          Evaluate now rather than waiting for the schedule
@@ -52,13 +54,14 @@ Exit codes:
 `;
 
 /** Commands whose positional arguments name agents. */
-const AGENT_COMMANDS = new Set(["run", "enable", "disable"]);
+const AGENT_COMMANDS = new Set(["run", "enable", "disable", "doctor"]);
 
 /** Options that consume the argument after them. */
 const VALUE_OPTIONS = new Set(["--timezone", "--limit"]);
 
 const COMMANDS = new Set([
   "status",
+  "doctor",
   "detect",
   "tick",
   "run",
@@ -210,6 +213,8 @@ export async function run(environment: CliEnvironment): Promise<ExitCode> {
         return await statusCommand(context);
       case "detect":
         return await detectCommand(context);
+      case "doctor":
+        return await doctorCommand(context, agents);
       case "tick":
         return await tickCommand(context);
       case "run":
