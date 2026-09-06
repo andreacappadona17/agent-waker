@@ -76,6 +76,14 @@ export interface TickOptions {
    * that has already completed today's cycle.
    */
   readonly force?: boolean;
+  /**
+   * Called just before an agent's provider is asked anything.
+   *
+   * An activation is allowed two minutes, so a `run` that says nothing until
+   * it finishes looks hung. The orchestrator does not know what to print, only
+   * when there is something to print about.
+   */
+  readonly onEvaluate?: (agentId: AgentId) => void;
 }
 
 export interface AgentOutcome {
@@ -362,6 +370,14 @@ export async function tick(
       if (skipped !== undefined) {
         outcomes.push({ ...outcomeOf(agentId, rolled), skipped });
         continue;
+      }
+
+      try {
+        options.onEvaluate?.(agentId);
+      } catch {
+        // Printing must never cost a provider turn. This runs between the
+        // activation and the save, so a throw here would spend a turn and
+        // then lose the record of having spent it.
       }
 
       const span = root.span("agent.activation", { "agent.id": agentId });

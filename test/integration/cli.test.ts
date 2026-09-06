@@ -287,6 +287,161 @@ describe("run", () => {
     expect(parsed.agents.claude?.phase).toBe("activated");
     expect(parsed.agents.codex?.phase).toBe("idle");
   });
+
+  it("says what it is doing, and what it found", async () => {
+    await writeConfig();
+
+    const { out } = await invoke(["run"], { now: at("05:00") });
+
+    // Two minutes is the activation budget, so silence until the end reads as
+    // a hang.
+    expect(out).toContain("Checking Fake claude...");
+    expect(out).toContain("Checking Fake codex...");
+    expect(out).toContain("Activation check complete");
+    expect(out).toMatch(/Fake claude\s+Activated/);
+    expect(out).toContain("Next scheduled decision: tomorrow 07:00");
+  });
+
+  it("reports only the agent it was pointed at", async () => {
+    await writeConfig();
+
+    const { out } = await invoke(["run", "codex"], { now: at("05:00") });
+
+    expect(out).toContain("Checking Fake codex...");
+    expect(out).not.toContain("claude");
+  });
+
+  it("leaves a completed cycle alone rather than spending another turn", async () => {
+    await writeConfig();
+    await invoke(["run"], { now: at("07:00") });
+
+    const { out, code } = await invoke(["run"], { now: at("09:00") });
+
+    expect(out).toContain("already activated today 07:00");
+    expect(out).toContain("nothing was sent");
+    expect(out).not.toContain("Checking");
+    expect(code).toBe(EXIT.ok);
+  });
+
+  it("explains a usage limit rather than calling it a failure", async () => {
+    await writeConfig();
+
+    const { out, code } = await invoke(["run"], {
+      now: at("07:00"),
+      scripts: {
+        codex: {
+          probe: [
+            {
+              kind: "blocked",
+              reason: "rolling_window",
+              constraints: [
+                {
+                  type: "rolling_window",
+                  resetAt: at("08:23"),
+                  confidence: "high",
+                },
+              ],
+            },
+          ],
+        },
+      },
+    });
+
+    // Deferment is normal, not an error (UX §2.3).
+    expect(code).toBe(EXIT.ok);
+    expect(out).toContain("Usage window limited");
+    expect(out).toContain("The current window resets at today 08:23.");
+  });
+
+  it("points at tomorrow after finishing a cycle early", async () => {
+    await writeConfig();
+    await invoke(["run"], { now: at("05:00") });
+
+    // The scheduled tick at 07:00 will find the cycle complete and do nothing,
+    // so promising "today 07:00" would be promising nothing.
+    const { out } = await invoke(["status"], { now: at("05:30") });
+
+    expect(out).toContain("tomorrow 07:00");
+    expect(out).not.toContain("today 07:00");
+  });
+
+  it("says what to do about an agent that needs a person", async () => {
+    await writeConfig();
+
+    const { out, code } = await invoke(["run", "codex"], {
+      now: at("07:00"),
+      scripts: {
+        codex: { detect: [{ installed: true, health: "broken" }] },
+      },
+    });
+
+    expect(code).toBe(EXIT.partial);
+    expect(out).toContain("Installation problem");
+    expect(out).toContain("agent-waker doctor codex");
+  });
+
+  it("agrees with tick about what counts as needing attention", async () => {
+    await writeConfig(`${CONFIG}agents:\n  codex:\n    enabled: false\n`);
+
+    const broken = {
+      codex: { detect: [{ installed: true, health: "broken" as const }] },
+    };
+
+    // Disabling a broken agent used to leave every scheduled tick reporting
+    // failure forever, because a disabled agent keeps the phase it had when it
+    // was switched off.
+    const ticked = await invoke(["tick"], {
+      now: at("07:00"),
+      scripts: broken,
+    });
+    const ran = await invoke(["run"], { now: at("07:30"), scripts: broken });
+
+    expect(ticked.code).toBe(EXIT.ok);
+    expect(ran.code).toBe(EXIT.ok);
+  });
+
+  it("says nothing about an agent that is switched off", async () => {
+    await writeConfig(`${CONFIG}agents:\n  codex:\n    enabled: false\n`);
+
+    const { out } = await invoke(["run"], {
+      now: at("07:00"),
+      scripts: {
+        codex: { detect: [{ installed: true, health: "broken" }] },
+      },
+    });
+
+    // A switched-off agent's last known problem is not news, and telling the
+    // user to run `doctor` on it contradicts the exit code.
+    expect(out).toContain("Disabled");
+    expect(out).not.toContain("agent-waker doctor codex");
+  });
+
+  it("leaves out the footer when nothing is scheduled", async () => {
+    await writeConfig(
+      `${CONFIG}agents:\n  claude:\n    enabled: false\n  codex:\n    enabled: false\n`,
+    );
+
+    const { out } = await invoke(["run"], { now: at("07:00") });
+
+    // An em dash as a headline answer is worse than no headline.
+    expect(out).not.toContain("Next scheduled decision");
+  });
+
+  it("keeps its output printable without Unicode", async () => {
+    await writeConfig();
+
+    const { out } = await invoke(["run"], {
+      now: at("05:00"),
+      env: { NO_COLOR: "1", LC_ALL: "C" },
+    });
+
+    expect(out).not.toMatch(ANSI);
+    expect(out).toMatch(/^[\u0020-\u007e\n]*$/);
+    // The charset alone is not the assertion: an ellipsis that became "?"
+    // would satisfy it while losing the word.
+    expect(out).toContain("Checking Fake claude...");
+    expect(out).toMatch(/Fake claude\s+Activated/);
+  });
 });
 
 describe("telemetry", () => {

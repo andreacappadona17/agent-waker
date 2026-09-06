@@ -26,8 +26,8 @@ import {
 import { effectiveAgentConfig } from "#src/config/config.js";
 import { AGENT_IDS, type AgentId } from "#src/core/agent.js";
 import {
-  cycleStartAt,
   needsAttention,
+  nextCycleAt,
   type AgentPhase,
 } from "#src/core/state.js";
 import { formatLocalTime, type Instant } from "#src/core/time.js";
@@ -47,11 +47,21 @@ export interface StatusAgentView {
   readonly nextCycleAt: Instant;
 }
 
-export interface StatusView {
+/**
+ * What the phase vocabulary needs to describe an agent.
+ *
+ * Narrower than the whole view on purpose: `run` reports on agents without
+ * inspecting the LaunchAgent, and asking it to would cost two subprocesses for
+ * a line it never prints.
+ */
+export interface PhaseContext {
   readonly now: Instant;
   readonly timezone: string;
   /** The configured `notBefore`, already formatted. */
   readonly notBefore: string;
+}
+
+export interface StatusView extends PhaseContext {
   readonly runtime: "local" | "github";
   readonly platform: string;
   readonly scheduler: {
@@ -62,15 +72,13 @@ export interface StatusView {
   readonly agents: readonly StatusAgentView[];
 }
 
-const DAY_MS = 86_400_000;
-
 export interface RenderOptions {
   readonly colour: boolean;
   readonly unicode: boolean;
 }
 
 /** What to call each phase, in the user's terms rather than the model's. */
-function stateLabel(agent: StatusAgentView, view: StatusView): string {
+export function stateLabel(agent: StatusAgentView, view: PhaseContext): string {
   if (!agent.enabled) return "Disabled";
 
   switch (agent.phase) {
@@ -118,14 +126,25 @@ function stateColour(agent: StatusAgentView): Colour {
   }
 }
 
+/**
+ * When the scheduler will next act on this agent, if it will at all.
+ *
+ * Undefined is an answer, not a gap: a disabled agent has no next decision,
+ * and one that needs a person will not get one by waiting (UX §2.2).
+ */
+export function nextDecisionAt(agent: StatusAgentView): Instant | undefined {
+  if (!agent.enabled || needsAttention(agent.phase)) return undefined;
+
+  return agent.phase === "activated"
+    ? agent.nextCycleAt
+    : (agent.nextAttemptAt ?? agent.nextCycleAt);
+}
+
 function nextAction(agent: StatusAgentView, view: StatusView): string {
   if (!agent.enabled) return "—";
   if (needsAttention(agent.phase)) return "needs attention";
 
-  const when =
-    agent.phase === "activated" ? agent.nextCycleAt : agent.nextAttemptAt;
-
-  return relativeTime(when ?? agent.nextCycleAt, view.now, view.timezone);
+  return relativeTime(nextDecisionAt(agent), view.now, view.timezone);
 }
 
 /**
@@ -134,7 +153,11 @@ function nextAction(agent: StatusAgentView, view: StatusView): string {
  * Only for states a person might otherwise misread: a limit that is not a
  * fault, or a fault that needs a specific next command.
  */
-function detail(agent: StatusAgentView, view: StatusView): string[] {
+function detail(agent: StatusAgentView, view: PhaseContext): string[] {
+  // A switched-off agent's last known problem is not news, and the line above
+  // it already says so.
+  if (!agent.enabled) return [];
+
   const when = (instant: Instant | undefined): string =>
     relativeTime(instant, view.now, view.timezone);
 
@@ -206,12 +229,25 @@ function schedulerLine(view: StatusView, options: RenderOptions): string {
  * ASCII mode the output is ASCII, even if a glyph is added here later and
  * nobody remembers to map it.
  */
-function toAscii(text: string): string {
+export function toAscii(text: string): string {
   return text
+    .replaceAll("…", "...")
     .replaceAll("·", "-")
     .replaceAll("─", "-")
     .replaceAll("—", "-")
     .replaceAll(/[^\u0020-\u007e\n]/g, "?");
+}
+
+/** The explanatory blocks under the table, for whichever agents are shown. */
+export function details(
+  agents: readonly StatusAgentView[],
+  view: PhaseContext,
+): string[] {
+  return agents.flatMap((agent) => {
+    const lines = detail(agent, view);
+
+    return lines.length === 0 ? [] : ["", agent.displayName, ...lines];
+  });
 }
 
 /** Renders the whole view. */
@@ -231,19 +267,13 @@ export function renderStatus(view: StatusView, options: RenderOptions): string {
     nextAction(agent, view),
   ]);
 
-  const details = view.agents.flatMap((agent) => {
-    const lines = detail(agent, view);
-
-    return lines.length === 0 ? [] : ["", agent.displayName, ...lines];
-  });
-
   const rendered = [
     "agent waker",
     `Runtime: ${view.runtime} · ${view.platform}`,
     `Desired activation: ${view.notBefore} ${view.timezone}`,
     "",
     table(["Agent", "State", "Last activation", "Next action"], rows),
-    ...details,
+    ...details(view.agents, view),
     "",
     schedulerLine(view, options),
     "",
@@ -258,28 +288,29 @@ export function renderStatus(view: StatusView, options: RenderOptions): string {
  * Reporting is not failing, so this exits zero whatever it finds. `doctor` is
  * the command whose exit code means healthy.
  */
-export async function statusCommand(
+/**
+ * Gathers everything the status vocabulary needs.
+ *
+ * Separate from the command because `run` reports the same facts about the
+ * same agents, and two builders would eventually disagree about what a phase
+ * is called.
+ */
+export async function buildAgentViews(
   context: CommandContext,
-): Promise<ExitCode> {
-  const { environment, config } = context;
-  const now = environment.now();
+  now: Instant,
+): Promise<StatusAgentView[]> {
   const loaded = await context.store.load();
-  const scheduler = await schedulerFor(context).inspect();
 
-  const agents = AGENT_IDS.map((agentId) => {
-    const effective = effectiveAgentConfig(config, agentId);
+  return AGENT_IDS.map((agentId) => {
+    const effective = effectiveAgentConfig(context.config, agentId);
     const state = loaded.state.agents[agentId];
-    const todayOpens = cycleStartAt(effective, now);
-    // Before the day's cycle opens the answer is today; after it, tomorrow.
-    const nextCycleAt =
-      now < todayOpens ? todayOpens : cycleStartAt(effective, now + DAY_MS);
 
     return {
       agentId,
       displayName: context.registry.get(agentId).displayName,
       enabled: effective.enabled,
       phase: state.phase,
-      nextCycleAt,
+      nextCycleAt: nextCycleAt(effective, state, now),
       ...(state.reason === undefined ? {} : { reason: state.reason }),
       ...(state.lastAttemptAt === undefined
         ? {}
@@ -298,26 +329,64 @@ export async function statusCommand(
         : { retryHorizonEndsAt: state.retryHorizonEndsAt }),
     };
   });
+}
 
-  environment.write(
-    renderStatus(
-      {
-        now,
-        timezone: config.timezone,
-        notBefore: formatLocalTime(config.schedule.notBefore),
-        runtime: "local",
-        platform: platformName(environment.platform),
-        scheduler,
-        agents,
-      },
-      {
-        colour: supportsColour({
-          env: environment.env,
-          isTty: environment.isTty,
-        }),
-        unicode: supportsUnicode(environment.env),
-      },
-    ),
+/** What the phase vocabulary needs, without reading any state. */
+export function phaseContext(
+  context: CommandContext,
+  now: Instant,
+): PhaseContext {
+  return {
+    now,
+    timezone: context.config.timezone,
+    notBefore: formatLocalTime(context.config.schedule.notBefore),
+  };
+}
+
+/**
+ * Gathers everything `status` prints, including the scheduler's own health.
+ *
+ * `run` deliberately builds only the agent half: inspecting the LaunchAgent
+ * costs two subprocesses, and it has no line to print them on.
+ */
+export async function buildStatusView(
+  context: CommandContext,
+): Promise<StatusView> {
+  const now = context.environment.now();
+
+  return {
+    ...phaseContext(context, now),
+    runtime: "local",
+    platform: platformName(context.environment.platform),
+    scheduler: await schedulerFor(context).inspect(),
+    agents: await buildAgentViews(context, now),
+  };
+}
+
+/** How this terminal should be written to. */
+export function renderOptions(context: CommandContext): RenderOptions {
+  const { environment } = context;
+
+  return {
+    colour: supportsColour({
+      env: environment.env,
+      isTty: environment.isTty,
+    }),
+    unicode: supportsUnicode(environment.env),
+  };
+}
+
+/**
+ * `status`: the command a user runs every morning.
+ *
+ * Reporting is not failing, so this exits zero whatever it finds. `doctor` is
+ * the command whose exit code means healthy.
+ */
+export async function statusCommand(
+  context: CommandContext,
+): Promise<ExitCode> {
+  context.environment.write(
+    renderStatus(await buildStatusView(context), renderOptions(context)),
   );
 
   return EXIT.ok;

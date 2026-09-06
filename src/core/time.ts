@@ -24,7 +24,8 @@ export interface LocalTime {
   readonly minute: number;
 }
 
-const DAY_MS = 86_400_000;
+/** Nominal, not actual: a DST day is 23 or 25 hours long. */
+export const DAY_MS = 86_400_000;
 
 const LOCAL_DATE_PATTERN = /^(\d{4})-(\d{2})-(\d{2})$/;
 

@@ -8,7 +8,7 @@
 
 import { AGENT_IDS, type AgentId } from "#src/core/agent.js";
 import type { EffectiveAgentConfig } from "#src/config/config.js";
-import { localDateAt, resolveLocalTime } from "#src/core/time.js";
+import { DAY_MS, localDateAt, resolveLocalTime } from "#src/core/time.js";
 import type { Instant, LocalDate } from "#src/core/time.js";
 
 /**
@@ -97,6 +97,33 @@ export function cycleStartAt(
     config.notBefore,
     config.timezone,
   );
+}
+
+/**
+ * When the next cycle that can still do something opens.
+ *
+ * Today's until it opens, and tomorrow's after — except that today's may
+ * already be finished, which a `run` before `notBefore` can do. Nothing will
+ * happen at 07:00 for an agent that activated at 05:00, so naming 07:00 would
+ * be a promise the scheduler does not keep. The mirror case matters as much:
+ * an agent whose recorded cycle is not today's is still owed one today, even
+ * when its phase still says `activated` because no tick has rolled it yet.
+ *
+ * "Tomorrow" is anchored to the day's opening rather than to `now`. On a
+ * 25-hour fall-back day, `now + 24h` is still the same local date for the
+ * first hour, and tomorrow would resolve to today.
+ */
+export function nextCycleAt(
+  config: EffectiveAgentConfig,
+  state: AgentState,
+  now: Instant,
+): Instant {
+  const opens = cycleStartAt(config, now);
+  const doneToday =
+    state.phase === "activated" &&
+    state.cycleDate === localDateAt(now, config.timezone);
+
+  return doneToday ? cycleStartAt(config, opens + DAY_MS) : opens;
 }
 
 /**

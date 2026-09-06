@@ -19,6 +19,7 @@ import { uninstallCommand } from "#src/cli/uninstall.js";
 import { doctorCommand } from "#src/cli/doctor.js";
 import { EXIT, type ExitCode } from "#src/cli/exit.js";
 import { logsCommand } from "#src/cli/logs.js";
+import { runCommand } from "#src/cli/run.js";
 import { scheduleSetCommand, setEnabledCommand } from "#src/cli/schedule.js";
 import { statusCommand } from "#src/cli/status.js";
 import { tickCommand } from "#src/cli/tick.js";
@@ -259,10 +260,7 @@ export async function run(environment: CliEnvironment): Promise<ExitCode> {
         return await tickCommand(context);
       case "run":
         // Evaluate now, but still respect what the provider says.
-        return await tickCommand(context, {
-          force: true,
-          ...(agents.length > 0 ? { only: agents } : {}),
-        });
+        return await runCommand(context, agents);
       case "logs": {
         const limit = Number(parsed.options.get("--limit") ?? 40);
 

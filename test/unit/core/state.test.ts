@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import { parseConfig, effectiveAgentConfig } from "#src/config/config.js";
 import {
   emptyState,
+  nextCycleAt,
   rollDailyCycle,
   type AgentState,
 } from "#src/core/state.js";
@@ -253,6 +254,87 @@ describe("rollDailyCycle", () => {
 
     expect(rollDailyCycle(disabled, { phase: "idle" }, MONDAY_07)).toEqual({
       phase: "idle",
+    });
+  });
+});
+
+describe("nextCycleAt", () => {
+  const idle: AgentState = { phase: "idle" };
+
+  it("names today's opening while it is still ahead", () => {
+    expect(nextCycleAt(config, idle, utc("2026-09-07T03:00:00"))).toBe(
+      MONDAY_07,
+    );
+  });
+
+  it("names tomorrow's once today's has opened and nothing is owed", () => {
+    expect(
+      nextCycleAt(config, activated(MONDAY_07), utc("2026-09-07T09:00:00")),
+    ).toBe(TUESDAY_07);
+  });
+
+  it("names tomorrow's when a cycle finished before it opened", () => {
+    // `run` can complete today's cycle early. The tick at 07:00 will find it
+    // complete and do nothing, so naming 07:00 would promise nothing.
+    expect(
+      nextCycleAt(
+        config,
+        activated(utc("2026-09-07T03:00:00")),
+        utc("2026-09-07T03:30:00"),
+      ),
+    ).toBe(TUESDAY_07);
+  });
+
+  it("still names today when the recorded cycle is an older one", () => {
+    // The mirror case: the phase says activated because no tick has rolled it
+    // yet, but the cycle belongs to yesterday and today's is still owed.
+    const yesterday: AgentState = {
+      ...activated(MONDAY_07),
+      cycleDate: "2026-09-06",
+    };
+
+    expect(nextCycleAt(config, yesterday, utc("2026-09-07T09:00:00"))).toBe(
+      MONDAY_07,
+    );
+  });
+
+  it("names today when there is no recorded cycle at all", () => {
+    expect(nextCycleAt(config, idle, utc("2026-09-07T09:00:00"))).toBe(
+      MONDAY_07,
+    );
+  });
+
+  describe("across a daylight-saving change", () => {
+    it("crosses the short day to 07:00 local, not to 06:00", () => {
+      // 2026-03-29 loses an hour, so a nominal 24 hours from its opening lands
+      // at 08:00 local the next day.
+      const springOpen = utc("2026-03-29T05:00:00");
+
+      expect(
+        nextCycleAt(
+          config,
+          { ...activated(springOpen), cycleDate: "2026-03-29" },
+          utc("2026-03-29T09:00:00"),
+        ),
+      ).toBe(utc("2026-03-30T05:00:00"));
+    });
+
+    it("does not fall back onto today on the long day", () => {
+      // 2026-10-25 gains an hour. Anchored to `now`, the first local hour of
+      // that day plus 24 hours is still the same local date, so "tomorrow"
+      // would resolve to today's opening — the false promise this exists to
+      // avoid.
+      // 00:30 local on the long day: anchored to `now`, 24 hours later is
+      // 23:30 local on the *same* date, so tomorrow resolves to today.
+      const early = utc("2026-10-24T22:30:00");
+      const answer = nextCycleAt(
+        config,
+        { ...activated(early), cycleDate: "2026-10-25" },
+        early,
+      );
+
+      expect(answer).toBe(utc("2026-10-26T06:00:00"));
+      expect(answer).toBeGreaterThan(utc("2026-10-25T06:00:00"));
     });
   });
 });

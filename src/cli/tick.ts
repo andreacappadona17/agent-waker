@@ -12,14 +12,28 @@
 
 import { EXIT, type ExitCode } from "#src/cli/exit.js";
 import type { CommandContext } from "#src/cli/context.js";
-import { tick, type TickOptions } from "#src/core/orchestrator.js";
+import {
+  tick,
+  type TickOptions,
+  type TickResult,
+} from "#src/core/orchestrator.js";
 import { needsAttention } from "#src/core/state.js";
 import { LockedError } from "#src/state/store.js";
 
-export async function tickCommand(
+/**
+ * Runs one pass and exports what it saw.
+ *
+ * Shared by `tick` and `run`: the clock wiring and the rule for when a tick is
+ * worth exporting are the same either way. What differs is presentation, and
+ * what to do about a lock somebody else is holding — so this rethrows
+ * `LockedError` and leaves that decision to the caller.
+ *
+ * @throws whatever the tick threw, `LockedError` included.
+ */
+export async function runTick(
   context: CommandContext,
   options: TickOptions = {},
-): Promise<ExitCode> {
+): Promise<TickResult> {
   const { environment } = context;
   // A tick that throws still has something worth exporting; one that found
   // nothing to do does not.
@@ -52,18 +66,7 @@ export async function tickCommand(
     // recovered or reset state file is still reported.
     worthExporting = result.notable;
 
-    // Deferment is state, not failure: only something a person has to fix
-    // counts against the exit code.
-    return result.agents.some((agent) => needsAttention(agent.phase))
-      ? EXIT.partial
-      : EXIT.ok;
-  } catch (error) {
-    if (error instanceof LockedError) {
-      // The previous run is still going. Nothing to do and nothing wrong.
-      return EXIT.ok;
-    }
-
-    throw error;
+    return result;
   } finally {
     const failure = worthExporting
       ? await context.telemetry.flush()
@@ -72,6 +75,7 @@ export async function tickCommand(
     if (failure !== undefined) {
       // Debug, not warn: a collector that is unreachable on a train must not
       // put a line in the log every minute. The scheduler kept working.
+      //
       // Swallowed: this runs in a `finally`, so a filesystem error here would
       // replace whatever the tick was about to return or throw.
       await context.log
@@ -84,5 +88,37 @@ export async function tickCommand(
         })
         .catch(() => undefined);
     }
+  }
+}
+
+/**
+ * What a pass of the scheduler is worth as an exit code.
+ *
+ * Deferment is state, not failure (UX §2.3): only something a person has to
+ * fix counts — and only for an agent that is switched on, because a disabled
+ * one keeps whatever phase it was in when it was switched off. Without that,
+ * disabling a broken agent leaves every tick reporting failure forever.
+ */
+export function exitFor(result: TickResult): ExitCode {
+  return result.agents.some(
+    (agent) => agent.skipped !== "disabled" && needsAttention(agent.phase),
+  )
+    ? EXIT.partial
+    : EXIT.ok;
+}
+
+export async function tickCommand(
+  context: CommandContext,
+  options: TickOptions = {},
+): Promise<ExitCode> {
+  try {
+    return exitFor(await runTick(context, options));
+  } catch (error) {
+    if (error instanceof LockedError) {
+      // The previous run is still going. Nothing to do and nothing wrong.
+      return EXIT.ok;
+    }
+
+    throw error;
   }
 }
