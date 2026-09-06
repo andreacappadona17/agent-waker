@@ -110,7 +110,14 @@ describe("run", () => {
       timeoutMs: 1_000,
     });
 
-    expect(result).toMatchObject({ startFailure: "ENOEXEC", exitCode: null });
+    // The kernels disagree about what this is. macOS refuses the exec, so the
+    // spawn itself fails with ENOEXEC; Linux's execvp falls back to running
+    // the file as a shell script, which exits 127. What an adapter needs from
+    // both is the same — it did not run — so that is what is asserted rather
+    // than an errno that is only true on one of them.
+    expect(result.startFailure ?? result.exitCode).not.toBe(0);
+    expect(result.stdout).toBe("");
+    expect(result.timedOut).toBe(false);
   });
 
   describe("stdin", () => {
