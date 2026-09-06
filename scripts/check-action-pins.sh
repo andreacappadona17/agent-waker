@@ -1,10 +1,9 @@
 #!/usr/bin/env sh
 #
-# Every third-party GitHub Action must be pinned to a full 40-character commit
-# SHA. A tag can be repointed at new content by whoever controls the action.
-# actionlint does not check this, so this does.
+# Every third-party action must be pinned to a full commit SHA, because a tag
+# can be repointed. actionlint does not check this.
 #
-# Written with portable grep: macOS has no `grep -P`.
+# Portable grep only: macOS has no `grep -P`.
 
 set -eu
 

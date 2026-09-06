@@ -1,14 +1,6 @@
 # Refuse packages published less than two days ago: compromised npm releases are
-# usually detected and pulled within 24-48 hours. This is enforced on every
-# `pnpm install --frozen-lockfile`, including in CI.
+# usually caught within 24-48 hours. Enforced on every --frozen-lockfile install.
 #
-# minimumReleaseAgeExclude is deliberately empty. When an install is blocked,
-# pin the newest version that satisfies the policy and say so in the commit
-# message, rather than adding an exception.
-#
-# The one case that needs a real exception is an urgent security fix: Renovate
-# raises those immediately, but this policy would hold the pull request red for
-# two days. Then, and only then, add a single entry naming the exact version,
-# reference the advisory in the pull request, and remove it once the fix ages
-# out. See CONTRIBUTING.md.
+# minimumReleaseAgeExclude is kept empty; when blocked, pin an older version
+# instead. See CONTRIBUTING.md for the security-fix exception.
 minimumReleaseAge: 2880

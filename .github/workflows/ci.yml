@@ -14,8 +14,6 @@ concurrency:
 
 jobs:
   verify:
-    # Avoid punctuation that is awkward to retype: these names are what branch
-    # protection matches on, character for character.
     name: Verify (Node ${{ matrix.node }}, ${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     timeout-minutes: 15
@@ -37,10 +35,8 @@ jobs:
         with:
           node-version: ${{ matrix.node }}
 
-      # One command, not a copy of its steps. `pnpm run` echoes each sub-script
-      # as it starts, so the failing one is still named in the log, and the
-      # ordering inside `verify` (build cleans before tests) cannot be broken
-      # by editing this file.
+      # One command rather than a copy of its steps, so CI and `pnpm verify`
+      # cannot drift. pnpm names each sub-script in the log as it runs.
       - name: Verify
         run: pnpm run verify
 
@@ -62,10 +58,8 @@ jobs:
 
   code-quality:
     name: Code quality (SonarQube)
-    # Opt-in: set repository variable SONAR_ENABLED=true and add SONAR_TOKEN.
-    # The fork check matters: repository variables resolve in the base-repo
-    # context, so without it every pull request from a fork would run this job
-    # with an empty token and fail.
+    # Opt-in: set SONAR_ENABLED=true and add SONAR_TOKEN. Variables resolve in
+    # the base repository, so fork pull requests need excluding explicitly.
     if: >-
       vars.SONAR_ENABLED == 'true' &&
       github.event.pull_request.head.repo.fork != true
@@ -83,16 +77,15 @@ jobs:
       - name: Set up toolchain
         uses: ./.github/actions/setup
 
-      # Regenerating coverage here is cheaper than an artifact round-trip
-      # between jobs, and removes a silent failure mode when the matrix changes.
+      # Cheaper than an artifact round-trip between jobs.
       - name: Generate coverage
         run: pnpm run test:coverage
 
       - name: SonarQube scan
         uses: SonarSource/sonarqube-scan-action@22918119ff8e1ca75a623e15c8296b6ea4fbe28f # v8.2.1
         with:
-          # Pinned explicitly: without it the scanner takes the host from the
-          # checked-out sonar-project.properties, which a branch can change.
+          # Pinned here so a branch cannot redirect the token via
+          # sonar-project.properties.
           args: -Dsonar.host.url=${{ vars.SONAR_HOST_URL || 'https://sonarcloud.io' }}
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}

@@ -5,14 +5,11 @@
 [extend]
 useDefault = true
 
-# Refuse to run on a gitleaks too old to understand this file, rather than
-# silently parsing it with different semantics.
+# Refuse to run on a gitleaks too old to parse this file.
 minVersion = "8.30.0"
 
-# The default rules cover sk-ant-api03- but NOT the long-lived OAuth token that
-# `claude setup-token` mints. That token is exactly what this project's own
-# GitHub runtime stores as CLAUDE_CODE_OAUTH_TOKEN (docs/PRD.md section 12.1),
-# so the one credential the threat model names would otherwise go undetected.
+# The default rules do not cover the long-lived OAuth token that
+# `claude setup-token` mints, which is the credential this project handles.
 [[rules]]
 id = "claude-code-oauth-token"
 description = "Claude Code long-lived OAuth token"

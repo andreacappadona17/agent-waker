@@ -1,0 +1,114 @@
+name: Bug report
+description: Something in agent waker does not behave as documented.
+labels: ["bug", "needs-triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the report. **Never paste tokens, API keys, or the contents
+        of provider authentication files.** `agent-waker doctor` redacts
+        credentials; raw provider output may not.
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: What did you expect, and what happened instead?
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Configure `notBefore: "07:00"`
+        2. Run `agent-waker tick`
+        3. ...
+    validations:
+      required: true
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Which area?
+      options:
+        - Scheduling / retry behaviour
+        - Agent detection or installation health
+        - Authentication
+        - Claude Code adapter
+        - Codex adapter
+        - Background scheduler (launchd)
+        - CLI output or formatting
+        - Something else / not sure
+    validations:
+      required: true
+
+  - type: dropdown
+    id: auth-mode
+    attributes:
+      label: How is the affected agent authenticated?
+      description: >
+        agent waker only activates subscription-backed usage. Knowing the mode
+        is usually the fastest route to a diagnosis.
+      options:
+        - Subscription / plan login
+        - API key
+        - Not sure
+        - Not applicable
+    validations:
+      required: true
+
+  - type: input
+    id: provider-version
+    attributes:
+      label: Provider CLI version
+      description: >
+        Output of `claude --version` or `codex --version`. Nearly every parsing
+        and reset-detection bug is specific to a provider CLI version, and this
+        is what a regression fixture gets built from.
+      placeholder: "codex 0.51.0"
+
+  - type: textarea
+    id: timeline
+    attributes:
+      label: Timeline
+      description: >
+        For anything timing-related. Include your timezone, your configured
+        `notBefore`, what happened at which wall-clock time, and any reset time
+        the provider reported.
+      placeholder: |
+        Timezone: Europe/Rome, notBefore: 07:00
+        07:00 - activation attempted, reported usage limited
+        07:00 - provider said reset at 08:23
+        08:24 - expected a retry, nothing happened until 09:30
+
+  - type: checkboxes
+    id: sleep
+    attributes:
+      label: Machine state
+      options:
+        - label: The machine was asleep or off at the expected activation time.
+
+  - type: textarea
+    id: doctor
+    attributes:
+      label: Output of `agent-waker doctor`
+      description: This is redacted output and is safe to paste.
+      render: text
+
+  - type: input
+    id: version
+    attributes:
+      label: agent waker version
+      description: Output of `agent-waker version`, or the commit you are on.
+    validations:
+      required: true
+
+  - type: input
+    id: os
+    attributes:
+      label: Operating system and Node.js version
+      placeholder: "macOS 15.3, Node 24.20.0"
+    validations:
+      required: true

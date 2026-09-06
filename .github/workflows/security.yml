@@ -15,9 +15,7 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
-  # These jobs run the same pnpm scripts a developer runs locally, which run the
-  # same digest-pinned containers. There is one definition of each tool and its
-  # version, in scripts/tool.sh, so local and CI cannot drift apart.
+  # Same pnpm scripts as local, so each tool is defined once in scripts/tool.sh.
   secret-scan:
     name: Secret scan (gitleaks)
     runs-on: ubuntu-latest
@@ -26,8 +24,7 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          # gitleaks scans history, not just the tip commit. A shallow clone
-          # would silently reduce this to one commit.
+          # gitleaks scans history; a shallow clone would cover one commit.
           fetch-depth: 0
           persist-credentials: false
 
@@ -55,8 +52,7 @@ jobs:
 
   sbom:
     name: Software bill of materials
-    # Only for what ships. A CycloneDX document for a throwaway pull-request
-    # branch has no consumer.
+    # Only for what ships; a pull-request branch SBOM has no consumer.
     if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     timeout-minutes: 10

@@ -10,3 +10,7 @@ coverage/
 
 # Generated software bill of materials.
 sbom.cdx.json*
+
+# Working documents for building the tool. Not part of the published
+# repository; proper documentation replaces them before release.
+temp-docs/

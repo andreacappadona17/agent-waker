@@ -28,19 +28,14 @@ jobs:
       # Maintains a rolling release pull request from Conventional Commits.
       # Merging it bumps the version, writes CHANGELOG.md and cuts the release.
       #
-      # Publishing to npm is deliberately not wired up. Adding it requires, in
-      # one change: removing "private": true from package.json, giving the
-      # package a real entry point (bin/exports), and configuring npm trusted
-      # publishing. Until then a release is a GitHub release only.
+      # npm publishing is not wired up: it needs `private` removed from
+      # package.json, an entry point, and trusted publishing configured.
       - name: Run release-please
         id: release
         uses: googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7 # v5.0.0
         with:
-          # A PAT makes the release pull request trigger CI; pull requests
-          # authored by GITHUB_TOKEN do not. Prefer a fine-grained token
-          # limited to this repository with Contents and Pull requests
-          # write. Without it the fallback still works, but release pull
-          # requests will not run CI.
+          # Pull requests authored by GITHUB_TOKEN do not trigger CI. Use a
+          # fine-grained token with Contents and Pull requests write.
           token: ${{ secrets.RELEASE_PLEASE_TOKEN || secrets.GITHUB_TOKEN }}
 
   sbom:
@@ -52,9 +47,8 @@ jobs:
     permissions:
       contents: write
     steps:
-      # A tag is mutable and could be repointed between jobs, and an empty
-      # ref makes checkout silently fall back to the pushed main HEAD. The
-      # commit sha is neither.
+      # Tags are mutable, and an empty ref makes checkout fall back to the
+      # branch head. Check out the commit instead.
       - name: Require a released commit
         env:
           SHA: ${{ needs.prepare.outputs.sha }}

@@ -1,0 +1,38 @@
+name: Feature request
+description: Suggest an improvement to agent waker.
+labels: ["enhancement", "needs-triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        agent waker has a deliberately narrow purpose: making subscription usage
+        windows available at useful times. Requests that turn it into a
+        general-purpose prompt scheduler are usually out of scope.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem would this solve?
+      description: Describe the situation you are in, not the solution you want.
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What would you like agent waker to do?
+    validations:
+      required: true
+
+  - type: dropdown
+    id: kind
+    attributes:
+      label: What kind of request is this?
+      options:
+        - Support for a new coding agent
+        - Scheduling or retry behaviour
+        - CLI usability
+        - New platform (Linux, Windows, CI)
+        - Something else
+    validations:
+      required: true

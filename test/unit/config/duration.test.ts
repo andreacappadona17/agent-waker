@@ -25,8 +25,8 @@ describe("parseDuration", () => {
     expect(parseDuration(input)).toBe(expected);
   });
 
-  // Annotated so the heterogeneous rows infer as one tuple type rather than a
-  // union of tuple types, which would force the callback to take both columns.
+  // Annotated so mixed rows infer as one tuple type; otherwise the callback
+  // is forced to take both columns.
   it.each<[input: unknown, description: string]>([
     ["", "empty string"],
     ["   ", "blank string"],
@@ -58,8 +58,8 @@ describe("parseDuration", () => {
     ["०१m", "devanagari digits"],
     ["²m", "superscript digits"],
   ])("rejects %j (%s)", (input) => {
-    // JS `\d` is ASCII-only. Pinned so that a future "support Unicode digits"
-    // change cannot silently accept values that Number() turns into NaN.
+    // JS \d is ASCII-only. Pinned so a later change cannot silently accept
+    // digits that Number() turns into NaN.
     expect(() => parseDuration(input)).toThrow(InvalidDurationError);
   });
 
@@ -84,8 +84,7 @@ describe("parseDuration", () => {
     });
 
     it("distinguishes an absurd duration from a malformed one", () => {
-      // UX.md section 19: the message has to say what is actually wrong. A huge
-      // duration is well formed, so offering duration examples would be useless.
+      // A huge duration is well formed, so offering examples would not help.
       const absurd = (): number => parseDuration("104249992d");
 
       expect(absurd).toThrow(/is too large; the maximum is 104249991d/);
@@ -101,8 +100,7 @@ describe("parseDuration", () => {
     });
 
     it("carries the original, untrimmed value for the config loader", () => {
-      // The loader matches this against the raw file to find the right line,
-      // so trimming it here would break that lookup.
+      // A caller matches this against the raw file to find the line.
       expect.assertions(2);
 
       try {
@@ -124,8 +122,7 @@ describe("parseDuration", () => {
     });
 
     it("does not emit raw terminal escapes from a crafted value", () => {
-      // A config file is user-controlled input that gets echoed to a terminal,
-      // so a crafted value must not be able to repaint it.
+      // Config is user-controlled input echoed to a terminal.
       const esc = String.fromCharCode(27);
       const escapedForm = JSON.stringify(esc).slice(1, -1);
 

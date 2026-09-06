@@ -17,9 +17,8 @@ concurrency:
 
 jobs:
   analyze:
-    # Uploading SARIF needs code scanning, which a private repository only
-    # has with Advanced Security. Skip instead of failing red until this
-    # repository is public.
+    # SARIF upload needs code scanning, which a private repository only has
+    # with Advanced Security. Skip rather than fail until this repo is public.
     if: github.event.repository.private != true
     name: Analyze
     runs-on: ubuntu-latest

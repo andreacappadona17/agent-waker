@@ -1,2 +1,2 @@
-# The same command CI runs, so the local gate and the CI gate cannot diverge.
+# The same command CI runs.
 pnpm run verify
