@@ -33,9 +33,14 @@ export const DEFAULT_UNKNOWN_RESET_DELAYS_MS: readonly number[] = [
   300_000, 600_000, 900_000, 1_800_000, 3_600_000,
 ];
 
-/** Network and provider-outage retries, deliberately shorter and separate. */
+/**
+ * Network and provider-outage retries, deliberately shorter and separate.
+ *
+ * The trailing hour is how the ladder degrades to an hourly health check: the
+ * last delay repeats, so no second mechanism is needed for it.
+ */
 export const DEFAULT_TRANSIENT_DELAYS_MS: readonly number[] = [
-  60_000, 300_000, 900_000,
+  60_000, 300_000, 900_000, 3_600_000,
 ];
 
 const DEFAULT_NOT_BEFORE: LocalTime = { hour: 7, minute: 0 };
