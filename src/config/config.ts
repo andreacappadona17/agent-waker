@@ -20,6 +20,7 @@ import {
 } from "yaml";
 
 import { AGENT_IDS, isAgentId, type AgentId } from "#src/core/agent.js";
+import { LEVELS, type LogLevel } from "#src/logging/log.js";
 import { describeValue } from "#src/core/describe.js";
 import { parseDuration } from "#src/config/duration.js";
 import {
@@ -48,6 +49,10 @@ const DEFAULT_RESET_GRACE_MS = 60_000;
 const DEFAULT_NORMAL_WINDOW_HORIZON_MS = 18_000_000;
 const DEFAULT_LONG_TERM_INTERVAL_MS = 21_600_000;
 const DEFAULT_TICK_INTERVAL_MS = 60_000;
+const DEFAULT_TELEMETRY_TIMEOUT_MS = 5_000;
+const MAX_TELEMETRY_TIMEOUT_MS = 30_000;
+const DEFAULT_LOG_LEVEL: LogLevel = "info";
+const DEFAULT_SERVICE_NAME = "agent-waker";
 
 /** Per-agent settings; everything not set here falls back to the global value. */
 export interface AgentConfig {
@@ -70,7 +75,25 @@ export interface AgentWakerConfig {
     readonly transient: { readonly delaysMs: readonly number[] };
   };
   readonly runtime: { readonly local: { readonly tickIntervalMs: number } };
+  readonly logging: { readonly level: LogLevel };
+  /**
+   * OTLP export, absent unless an endpoint is configured.
+   *
+   * Absence is the off switch. A separate `enabled` key would let a machine
+   * name a collector it never talks to, which is a state worth nobody
+   * debugging.
+   */
+  readonly telemetry?: TelemetryConfig;
   readonly agents: Readonly<Record<AgentId, AgentConfig>>;
+}
+
+/** Where traces and logs go, when they go anywhere. */
+export interface TelemetryConfig {
+  /** Collector base URL; `/v1/traces` and `/v1/logs` are appended. */
+  readonly endpoint: string;
+  readonly headers: Readonly<Record<string, string>>;
+  readonly serviceName: string;
+  readonly timeoutMs: number;
 }
 
 /** One agent's settings after global values and overrides are merged. */
@@ -218,6 +241,129 @@ function parseBoolean(raw: unknown): boolean {
   }
 
   return raw;
+}
+
+/**
+ * A collector URL.
+ *
+ * Restricted to HTTP and HTTPS because this is the one place the program
+ * sends anything off the machine, and `file:` would make it a copier of
+ * arbitrary state into arbitrary paths.
+ *
+ * A credential may not be part of it, in either of the two forms a hosted
+ * collector documents. `https://id:token@host` is refused by `fetch` itself,
+ * so accepting it here would mean a configuration that validates and then
+ * never exports anything; `?api-key=` survives into every diagnostic that
+ * prints the endpoint. Both belong in `headers`, where this program already
+ * knows not to print them.
+ */
+function parseEndpoint(raw: unknown): string {
+  // Deliberately never echoes the value it rejected. Every other reader in
+  // this file quotes what it received, which is the more helpful message — but
+  // a mistyped endpoint is usually a pasted one, and the paste that gets
+  // mistyped is the credentialed form a hosted collector hands out. The file,
+  // line and column point at it; stderr does not need a copy.
+  if (typeof raw !== "string") {
+    throw new Error("Expected a URL.");
+  }
+
+  // Tested against the text rather than the parsed URL: `new URL` reports an
+  // empty `search` for a bare `?`, which still breaks the path this is joined
+  // to.
+  if (raw.includes("?") || raw.includes("#")) {
+    throw new Error(
+      "The endpoint is a base URL; `/v1/traces` and `/v1/logs` are added to it. Move a query string or fragment into telemetry.headers.",
+    );
+  }
+
+  let url: URL;
+
+  try {
+    url = new URL(raw);
+  } catch {
+    throw new Error("Expected a URL.");
+  }
+
+  if (url.protocol !== "http:" && url.protocol !== "https:") {
+    throw new Error("Expected an http:// or https:// URL.");
+  }
+
+  if (url.username !== "" || url.password !== "") {
+    throw new Error(
+      "A user name or password in the endpoint cannot be sent, and would be printed by `agent-waker doctor`. Put the credential in telemetry.headers instead.",
+    );
+  }
+
+  return raw;
+}
+
+function parseLogLevel(raw: unknown): LogLevel {
+  const level = LEVELS.find((candidate) => candidate === raw);
+
+  if (level === undefined) {
+    throw new Error(
+      `Expected one of ${LEVELS.join(", ")}, but received ${describeValue(raw)}.`,
+    );
+  }
+
+  return level;
+}
+
+function parseServiceName(raw: unknown): string {
+  if (typeof raw !== "string" || raw.trim() === "") {
+    throw new Error(`Expected a name, but received ${describeValue(raw)}.`);
+  }
+
+  return raw;
+}
+
+/** Export headers, which is where a collector's credential lives. */
+function parseHeaders(raw: unknown): Record<string, string> {
+  // A nested mapping arrives as a YAML node rather than a plain object; every
+  // other reader in this file takes a scalar and never meets one.
+  const mapping: unknown = isMap(raw) ? (raw.toJSON() as unknown) : raw;
+
+  if (
+    typeof mapping !== "object" ||
+    mapping === null ||
+    Array.isArray(mapping)
+  ) {
+    throw new Error(
+      `Expected a mapping of header names to values, but received ${describeValue(raw)}.`,
+    );
+  }
+
+  return Object.fromEntries(
+    Object.entries(mapping).map(([name, value]) => {
+      if (typeof value !== "string") {
+        throw new Error(
+          `Expected header ${name} to be text, but received ${describeValue(value)}.`,
+        );
+      }
+
+      return [name, value];
+    }),
+  );
+}
+
+/**
+ * The export timeout, bounded above.
+ *
+ * A tick is a short-lived process and launchd will not start another while one
+ * is still running, so a long timeout against an unreachable collector does
+ * not just slow a tick down — it swallows the ticks that should have happened
+ * meanwhile. This is the one way telemetry could degrade scheduling.
+ */
+function parseTelemetryTimeout(raw: unknown): number {
+  const milliseconds = parsePositiveDuration(raw);
+
+  if (milliseconds > MAX_TELEMETRY_TIMEOUT_MS) {
+    throw new Error(
+      `Expected at most 30s, but received ${describeValue(raw)}. A tick must finish before the next one is due.`,
+    );
+  }
+
+  return milliseconds;
 }
 
 /** A duration that would otherwise let a retry loop spin. */
@@ -373,10 +519,16 @@ export function parseConfig(source: string, file: string): AgentWakerConfig {
   }
 
   const src: Source = { doc, lines, file, known: new Set() };
+  // Read before anything else, and in this order. `version` decides whether
+  // any other key means what this build thinks it means, so a v9 file must be
+  // told that rather than told its collector URL is malformed.
+  const version = required(src, ["version"], parseVersion);
+  const timezone = required(src, ["timezone"], parseTimeZone);
+  const telemetry = readTelemetry(src);
 
   const config: AgentWakerConfig = {
-    version: required(src, ["version"], parseVersion),
-    timezone: required(src, ["timezone"], parseTimeZone),
+    version,
+    timezone,
     schedule: {
       notBefore:
         optional(src, ["schedule", "notBefore"], parseLocalTime) ??
@@ -424,6 +576,11 @@ export function parseConfig(source: string, file: string): AgentWakerConfig {
           ) ?? DEFAULT_TICK_INTERVAL_MS,
       },
     },
+    logging: {
+      level:
+        optional(src, ["logging", "level"], parseLogLevel) ?? DEFAULT_LOG_LEVEL,
+    },
+    ...(telemetry === undefined ? {} : { telemetry }),
     agents: (rejectUnknownAgents(src), readAgents(src)),
   };
 
@@ -442,6 +599,53 @@ export function parseConfig(source: string, file: string): AgentWakerConfig {
   rejectUnknownKeys(src);
 
   return config;
+}
+
+/** Reads the telemetry block, which is absent until an endpoint is named. */
+function readTelemetry(src: Source): TelemetryConfig | undefined {
+  const block = src.doc.getIn(["telemetry"], true);
+
+  // `telemetry: http://localhost:4318` on one line is the likeliest way to
+  // write this wrong, and every reader below would look for keys inside it and
+  // find none. Silence is this feature's whole failure mode.
+  if (block !== undefined && block !== null && !isMap(block)) {
+    fail(src, ["telemetry"], "Expected a mapping, with an endpoint inside it.");
+  }
+
+  const endpoint = optional(src, ["telemetry", "endpoint"], parseEndpoint);
+  // Read whether or not there is an endpoint, so each key is registered and a
+  // typo inside the block is still an unknown key rather than silence. No
+  // defaults yet: an explicitly empty value still means the block was written.
+  const headers = optional(src, ["telemetry", "headers"], parseHeaders);
+  const serviceName = optional(
+    src,
+    ["telemetry", "serviceName"],
+    parseServiceName,
+  );
+  const timeout = optional(
+    src,
+    ["telemetry", "timeout"],
+    parseTelemetryTimeout,
+  );
+
+  if (endpoint === undefined) {
+    if ([headers, serviceName, timeout].some((value) => value !== undefined)) {
+      fail(
+        src,
+        ["telemetry"],
+        "Nothing is exported without telemetry.endpoint. Add it, or remove this block.",
+      );
+    }
+
+    return undefined;
+  }
+
+  return {
+    endpoint,
+    headers: headers ?? {},
+    serviceName: serviceName ?? DEFAULT_SERVICE_NAME,
+    timeoutMs: timeout ?? DEFAULT_TELEMETRY_TIMEOUT_MS,
+  };
 }
 
 /** Merges the global settings with one agent's overrides. */

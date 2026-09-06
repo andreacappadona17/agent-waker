@@ -294,6 +294,24 @@ describe("createEventLog", () => {
 
       expect(await readdir(directory)).toContain("events-2026-08-02.jsonl");
     });
+
+    it("prunes even when every event it is given is filtered out", async () => {
+      // Most ticks are no-ops and a no-op logs at debug, so pruning behind the
+      // level filter would mean a quiet machine never deletes an old file again.
+      await writeFile(join(directory, "events-2026-08-01.jsonl"), "{}\n");
+
+      const log = createEventLog({ directory, level: "warn" });
+
+      await log.write({
+        timestamp: MORNING,
+        level: "debug",
+        event: "scheduler.tick",
+        runtime: "local",
+        fields: {},
+      });
+
+      expect(await readdir(directory)).toEqual([]);
+    });
   });
 });
 

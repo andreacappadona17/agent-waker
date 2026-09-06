@@ -8,6 +8,7 @@
  */
 
 import type {
+  AdapterContext,
   AgentAdapter,
   AuthResult,
   DetectionResult,
@@ -21,6 +22,14 @@ export interface FakeScript {
   readonly probe?: readonly (AgentObservation | Error)[];
   readonly activate?: readonly (AgentObservation | Error)[];
   readonly probeMode?: "separate" | "activation_is_probe";
+  /**
+   * Executables to run during `detect`.
+   *
+   * A real adapter learns everything by starting a process. This is how a test
+   * makes the fake one do the same, so the runner the orchestrator hands over
+   * is actually used.
+   */
+  readonly exec?: readonly string[];
 }
 
 export interface FakeAdapter extends AgentAdapter {
@@ -76,10 +85,14 @@ export function createFakeAdapter(
     capabilities: { probeMode },
     calls,
 
-    detect(): Promise<DetectionResult> {
+    async detect(context: AdapterContext): Promise<DetectionResult> {
       const index = calls.detect++;
 
-      return Promise.resolve(step(script.detect, index, INSTALLED));
+      for (const executable of script.exec ?? []) {
+        await context.runner.run({ executable, args: [], timeoutMs: 1_000 });
+      }
+
+      return step(script.detect, index, INSTALLED);
     },
 
     inspectAuth(): Promise<AuthResult> {

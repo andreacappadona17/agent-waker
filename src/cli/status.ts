@@ -25,7 +25,11 @@ import {
 } from "#src/cli/format.js";
 import { effectiveAgentConfig } from "#src/config/config.js";
 import { AGENT_IDS, type AgentId } from "#src/core/agent.js";
-import { cycleStartAt, type AgentPhase } from "#src/core/state.js";
+import {
+  cycleStartAt,
+  needsAttention,
+  type AgentPhase,
+} from "#src/core/state.js";
 import { formatLocalTime, type Instant } from "#src/core/time.js";
 
 export interface StatusAgentView {
@@ -114,18 +118,9 @@ function stateColour(agent: StatusAgentView): Colour {
   }
 }
 
-/** Phases that no amount of waiting will clear. */
-function needsPerson(agent: StatusAgentView): boolean {
-  return (
-    agent.phase === "unhealthy" ||
-    agent.phase === "auth_required" ||
-    agent.phase === "failed"
-  );
-}
-
 function nextAction(agent: StatusAgentView, view: StatusView): string {
   if (!agent.enabled) return "—";
-  if (needsPerson(agent)) return "needs attention";
+  if (needsAttention(agent.phase)) return "needs attention";
 
   const when =
     agent.phase === "activated" ? agent.nextCycleAt : agent.nextAttemptAt;

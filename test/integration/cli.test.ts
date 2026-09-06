@@ -6,6 +6,7 @@ import {
   stat,
   writeFile,
 } from "node:fs/promises";
+import { createServer, type Server } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -285,6 +286,104 @@ describe("run", () => {
 
     expect(parsed.agents.claude?.phase).toBe("activated");
     expect(parsed.agents.codex?.phase).toBe("idle");
+  });
+});
+
+describe("telemetry", () => {
+  let server: Server;
+  let received: { url: string; body: string }[];
+  let endpoint: string;
+
+  beforeEach(async () => {
+    received = [];
+    server = createServer((request, response) => {
+      const chunks: Buffer[] = [];
+
+      request.on("data", (chunk: Buffer) => chunks.push(chunk));
+      request.on("end", () => {
+        received.push({
+          url: request.url ?? "",
+          body: Buffer.concat(chunks).toString("utf8"),
+        });
+        response.writeHead(200).end();
+      });
+    });
+
+    await new Promise<void>((resolve) =>
+      server.listen(0, "127.0.0.1", resolve),
+    );
+
+    const address = server.address();
+
+    endpoint = `http://127.0.0.1:${String(
+      typeof address === "object" && address !== null ? address.port : 0,
+    )}`;
+  });
+
+  afterEach(async () => {
+    await new Promise<void>((resolve) => {
+      server.close(() => {
+        resolve();
+      });
+    });
+  });
+
+  const withCollector = async (): Promise<void> => {
+    await writeConfig(`${CONFIG}telemetry:\n  endpoint: ${endpoint}\n`);
+  };
+
+  it("exports a trace and its logs to the collector", async () => {
+    await withCollector();
+    await invoke(["tick"], { now: at("07:00") });
+
+    expect(received.map((request) => request.url).toSorted()).toEqual([
+      "/v1/logs",
+      "/v1/traces",
+    ]);
+
+    const traces = received.find((request) => request.url === "/v1/traces");
+
+    expect(traces?.body).toContain("agent_waker.tick");
+    expect(traces?.body).toContain("agent.activation");
+    expect(traces?.body).toContain("service.name");
+  });
+
+  it("stays off the network when nothing was due", async () => {
+    await withCollector();
+    await invoke(["tick"], { now: at("05:00") });
+
+    // A minute-level scheduler cannot afford a connection attempt per tick,
+    // and a no-op has nothing to say (ARCHITECTURE §34).
+    expect(received).toEqual([]);
+  });
+
+  it("sends nothing at all when no endpoint is configured", async () => {
+    await writeConfig();
+    await invoke(["tick"], { now: at("07:00") });
+
+    expect(received).toEqual([]);
+  });
+
+  it("completes the tick when the collector refuses everything", async () => {
+    await writeConfig(
+      `${CONFIG}telemetry:\n  endpoint: http://127.0.0.1:1\n  timeout: 1s\n`,
+    );
+
+    const { code } = await invoke(["tick"], { now: at("07:00") });
+
+    expect(code).toBe(EXIT.ok);
+    expect(await stateFile()).toContain('"phase": "activated"');
+  });
+
+  it("records the export failure once debug logging is on", async () => {
+    await writeConfig(
+      `${CONFIG}logging:\n  level: debug\ntelemetry:\n  endpoint: http://127.0.0.1:1\n  timeout: 1s\n`,
+    );
+    await invoke(["tick"], { now: at("07:00") });
+
+    const { out } = await invoke(["logs"]);
+
+    expect(out).toContain("telemetry.export_failed");
   });
 });
 

@@ -99,7 +99,21 @@ describe("redactValue", () => {
   it("treats a secret as literal text, not as a pattern", () => {
     // An environment value containing regex metacharacters must not break the
     // redactor or match more than itself.
-    expect(redactValue("a.c and abc", ["a.c"])).toBe("[redacted] and abc");
+    expect(
+      redactValue("a.c-and-then-some and abcXand-then-some", [
+        "a.c-and-then-some",
+      ]),
+    ).toBe("[redacted] and abcXand-then-some");
+  });
+
+  it("ignores a secret too short to be one", () => {
+    // A one-character "secret" matches between every character and would blank
+    // the whole log; a short tenant id would redact an ordinary word. Both
+    // reach here now that configuration can name secrets, which the
+    // environment reader filtered on its own.
+    expect(redactValue("team of 1 sent a token", ["1", "team"])).toBe(
+      "team of 1 sent a token",
+    );
   });
 });
 

@@ -54,6 +54,22 @@ schedule:
   # The earliest time to wake the agents. Not a guarantee of when they run.
   notBefore: "${notBefore}"
 
+# How much to write to the event log. Raise it to debug to see no-op ticks and
+# telemetry export failures.
+# logging:
+#   level: info
+
+# Send traces and logs to an OpenTelemetry collector. Off until an endpoint is
+# named here; nothing leaves this machine otherwise. Scheduling never fails
+# because a collector is unreachable.
+#
+# telemetry:
+#   endpoint: http://localhost:4318
+#   headers:
+#     x-scope-orgid: team
+#   serviceName: agent-waker
+#   timeout: 5s
+
 # Both agents are included by default. Turn one off with
 # \`agent-waker disable codex\`.
 agents:

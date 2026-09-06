@@ -71,6 +71,7 @@ describe("parseConfig", () => {
         transient: { delaysMs: DEFAULT_TRANSIENT_DELAYS_MS },
       },
       runtime: { local: { tickIntervalMs: 60_000 } },
+      logging: { level: "info" },
       agents: {
         claude: { enabled: true },
         codex: { enabled: true },
@@ -95,6 +96,7 @@ describe("parseConfig", () => {
         transient: { delaysMs: DEFAULT_TRANSIENT_DELAYS_MS },
       },
       runtime: { local: { tickIntervalMs: 60_000 } },
+      logging: { level: "info" },
       agents: {
         claude: { enabled: true },
         codex: { enabled: true },
@@ -198,6 +200,148 @@ retry:
       expect(failure(`${MINIMAL}timezone: UTC\n`).message).toMatch(
         /duplicate/i,
       );
+    });
+  });
+
+  describe("telemetry", () => {
+    it("is absent unless an endpoint is named", () => {
+      expect(parseConfig(MINIMAL, "config.yaml").telemetry).toBeUndefined();
+    });
+
+    it("reads an endpoint, with defaults for the rest", () => {
+      const config = parseConfig(
+        `${MINIMAL}telemetry:\n  endpoint: http://localhost:4318\n`,
+        "config.yaml",
+      );
+
+      expect(config.telemetry).toEqual({
+        endpoint: "http://localhost:4318",
+        headers: {},
+        serviceName: "agent-waker",
+        timeoutMs: 5_000,
+      });
+    });
+
+    it("reads headers, a service name and a timeout", () => {
+      const config = parseConfig(
+        [
+          MINIMAL,
+          "telemetry:",
+          "  endpoint: https://collector.example/otlp",
+          "  serviceName: waker-laptop",
+          "  timeout: 2s",
+          "  headers:",
+          "    x-scope-orgid: team",
+          "",
+        ].join("\n"),
+        "config.yaml",
+      );
+
+      expect(config.telemetry).toEqual({
+        endpoint: "https://collector.example/otlp",
+        headers: { "x-scope-orgid": "team" },
+        serviceName: "waker-laptop",
+        timeoutMs: 2_000,
+      });
+    });
+
+    it("refuses a block that configures an export with nowhere to send it", () => {
+      // Silence is this feature's whole failure mode, so a half-written block
+      // must not quietly do nothing.
+      const error = failure(
+        `${MINIMAL}telemetry:\n  serviceName: waker-laptop\n`,
+      );
+
+      expect(error.path).toBe("telemetry");
+      expect(error.message).toMatch(/telemetry\.endpoint/);
+    });
+
+    it.each([
+      ["https://id:token@collector.example", /telemetry\.headers/],
+      ["http://localhost:4318/?api-key=secret", /telemetry\.headers/],
+      ["http://localhost:4318/#frag", /telemetry\.headers/],
+    ])("refuses a credential smuggled into %j", (endpoint, expected) => {
+      const error = failure(
+        `${MINIMAL}telemetry:\n  endpoint: "${endpoint}"\n`,
+      );
+
+      expect(error.path).toBe("telemetry.endpoint");
+      expect(error.message).toMatch(expected);
+    });
+
+    it("bounds the export timeout, so a tick cannot outlive its interval", () => {
+      const error = failure(
+        `${MINIMAL}telemetry:\n  endpoint: http://localhost:4318\n  timeout: 10m\n`,
+      );
+
+      expect(error.path).toBe("telemetry.timeout");
+      expect(error.message).toMatch(/30s/);
+    });
+
+    it.each([
+      ["not-a-url", /url/i],
+      ["file:///etc/passwd", /http/i],
+      ["ftp://collector.example", /http/i],
+    ])("rejects %j as an endpoint", (endpoint, expected) => {
+      const error = failure(`${MINIMAL}telemetry:\n  endpoint: ${endpoint}\n`);
+
+      expect(error.message).toMatch(expected);
+      expect(error.path).toBe("telemetry.endpoint");
+      expect(error.line).toBe(4);
+    });
+
+    it("rejects headers that are not a mapping", () => {
+      const error = failure(
+        `${MINIMAL}telemetry:\n  endpoint: http://localhost:4318\n  headers: nope\n`,
+      );
+
+      expect(error.path).toBe("telemetry.headers");
+    });
+
+    it("rejects a header value that is not text", () => {
+      const error = failure(
+        `${MINIMAL}telemetry:\n  endpoint: http://localhost:4318\n  headers:\n    x-count: 3\n`,
+      );
+
+      expect(error.message).toMatch(/x-count/);
+    });
+
+    it("rejects a blank service name", () => {
+      const error = failure(
+        `${MINIMAL}telemetry:\n  endpoint: http://localhost:4318\n  serviceName: "  "\n`,
+      );
+
+      expect(error.path).toBe("telemetry.serviceName");
+    });
+
+    it("rejects a misspelt telemetry key", () => {
+      const error = failure(
+        `${MINIMAL}telemetry:\n  endpoint: http://localhost:4318\n  servicename: x\n`,
+      );
+
+      expect(error.message).toMatch(/unknown/i);
+    });
+  });
+
+  describe("logging", () => {
+    it("defaults to info, so debug output is off", () => {
+      expect(parseConfig(MINIMAL, "config.yaml").logging.level).toBe("info");
+    });
+
+    it("can be turned up, which is what makes debug events reachable", () => {
+      const config = parseConfig(
+        `${MINIMAL}logging:\n  level: debug\n`,
+        "config.yaml",
+      );
+
+      expect(config.logging.level).toBe("debug");
+    });
+
+    it("rejects a level it does not have", () => {
+      const error = failure(`${MINIMAL}logging:\n  level: verbose\n`);
+
+      expect(error.path).toBe("logging.level");
+      expect(error.message).toMatch(/debug, info, warn, error/);
     });
   });
 

@@ -31,7 +31,7 @@ const FILE_PATTERN = /^events-(\d{4}-\d{2}-\d{2})\.jsonl$/;
 export type LogLevel = "debug" | "info" | "warn" | "error";
 
 /** Ordered, so a configured level admits everything at or above it. */
-const LEVELS: readonly LogLevel[] = ["debug", "info", "warn", "error"];
+export const LEVELS: readonly LogLevel[] = ["debug", "info", "warn", "error"];
 
 /** One thing that happened, in the vocabulary the CLI renders. */
 export interface Event {
@@ -57,6 +57,8 @@ export interface EventLogOptions {
   readonly retentionDays?: number;
   /** Values to treat as secret; defaults to the real environment. */
   readonly env?: Readonly<Record<string, string | undefined>>;
+  /** Further values to mask, such as credentials read from configuration. */
+  readonly secrets?: readonly string[];
 }
 
 function fileNameFor(timestamp: Instant, timezone: string): string {
@@ -71,10 +73,11 @@ export function createEventLog(options: EventLogOptions): EventLog {
     timezone = "UTC",
     retentionDays = 14,
     env = process.env,
+    secrets: extraSecrets = [],
   } = options;
 
   const minimum = LEVELS.indexOf(level);
-  const secrets = secretsFromEnv(env);
+  const secrets = [...secretsFromEnv(env), ...extraSecrets];
   let pruned = false;
 
   /** Drops files past the retention window. Once per process is enough. */
@@ -94,14 +97,17 @@ export function createEventLog(options: EventLogOptions): EventLog {
 
   return {
     async write(event: Event): Promise<void> {
-      if (LEVELS.indexOf(event.level) < minimum) return;
-
       await mkdir(directory, { recursive: true, mode: DIRECTORY_MODE });
 
+      // Before the level filter, not after. Most ticks are no-ops and no-ops
+      // log at debug, so pruning behind the filter would mean a machine whose
+      // agents are all disabled never deletes an old file again.
       if (!pruned) {
         pruned = true;
         await prune(event.timestamp);
       }
+
+      if (LEVELS.indexOf(event.level) < minimum) return;
 
       const record = {
         timestamp: new Date(event.timestamp).toISOString(),

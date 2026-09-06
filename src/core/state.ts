@@ -33,6 +33,19 @@ export const AGENT_PHASES = [
 
 export type AgentPhase = (typeof AGENT_PHASES)[number];
 
+/**
+ * Phases that no amount of waiting will clear.
+ *
+ * One rule, three readers: `status` says so, `tick` turns it into an exit
+ * code, and the orchestrator logs at `warn` and marks the span failed. It was
+ * spelled out separately in each until they disagreed.
+ */
+export function needsAttention(phase: AgentPhase): boolean {
+  return (
+    phase === "unhealthy" || phase === "auth_required" || phase === "failed"
+  );
+}
+
 /** One agent's persisted state. */
 export interface AgentState {
   readonly phase: AgentPhase;

@@ -103,7 +103,63 @@ trying to warm.
 It does not install, update, or repair agent CLIs. It does not bypass provider
 limits or operating-system security controls. It does not run arbitrary prompts
 on a schedule, poll providers continuously, or send anything to a server
-operated by this project — there is no backend and no telemetry.
+operated by this project — there is no backend, and no telemetry is collected
+by anyone but you. See [Observability](#observability) if you want it to report
+to a collector you run.
+
+## Observability
+
+Every run writes a structured JSONL event log under
+`~/.local/state/agent-waker/logs`, readable with `agent-waker logs`. That is the
+whole story unless you ask for more.
+
+If you run an OpenTelemetry collector, agent waker can export **traces and
+logs** to it over OTLP/HTTP. Name an endpoint in `config.yaml`:
+
+```yaml
+telemetry:
+  endpoint: http://localhost:4318
+  # Credentials go here, never in the endpoint URL.
+  headers:
+    x-scope-orgid: team
+  serviceName: agent-waker
+  timeout: 5s
+```
+
+Absence of `telemetry.endpoint` is the off switch, and it is the default:
+without it nothing leaves the machine.
+
+Each tick becomes one trace — `agent_waker.tick`, an `agent.activation` span
+per agent, and a `provider.exec` span per provider process with its exit code
+and duration. Event-log records are exported alongside, linked to the span they
+came from.
+
+Three properties worth knowing:
+
+- **A collector never breaks a tick.** Every export failure is swallowed and
+  recorded at `debug`; scheduling carries on. `agent-waker doctor` posts a real
+  probe span, so you find out that a collector is rejecting your payload before
+  you need the traces.
+- **Everything is redacted first**, through the same pipeline as the event log,
+  extended with your export headers. Provider output is masked and truncated;
+  auth files and credentials are never read into a record at all.
+- **Ticks that had nothing to say are not exported.** On a one-minute schedule
+  that keeps a laptop off the network for the common case. A tick that
+  recovered a corrupt state file still reports, even if no agent was due.
+
+`timeout` bounds how long a tick waits for the collector, not how long the
+process lives: a collector that drops packets outright — a VPN down, a captive
+portal — holds the process for about ten seconds regardless, because that is
+the runtime's own connect timeout. It costs that only on ticks that had
+something to export, and `launchd` runs on a sixty-second interval, so no tick
+is lost. Values above `30s` are refused for that reason.
+
+One field identifies your machine: `process.executable.path` on a
+`provider.exec` span is the resolved provider binary, which usually contains
+your home directory. Nothing else host-identifying is sent.
+
+Turn up `logging.level` to `debug` to see no-op ticks and export failures in
+the event log.
 
 ## Contributing
 

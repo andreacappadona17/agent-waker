@@ -55,10 +55,13 @@ function maskPatterns(text: string): string {
 }
 
 function maskKnown(text: string, secrets: readonly string[]): string {
-  // A blank secret matches between every character, which would redact the
-  // whole log. Guarded here as well as at the source, since callers pass lists.
+  // Short strings are the danger: a secret of "1" matches between every
+  // character and blanks the whole log, and a tenant id of "team" would redact
+  // the word wherever it appeared. The length bar lives here rather than only
+  // in `secretsFromEnv`, because configuration is now a source of secrets too
+  // and it was never subject to it.
   return secrets
-    .filter((secret) => secret.trim() !== "")
+    .filter((secret) => secret.trim().length >= MIN_SECRET_LENGTH)
     .reduce(
       // split/join rather than a regex: an environment value can contain any
       // character, and building a pattern out of it would either break or match

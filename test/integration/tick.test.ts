@@ -10,8 +10,17 @@ import type { AgentId } from "#src/core/agent.js";
 import type { AgentObservation } from "#src/core/observation.js";
 import { tick, type TickResult } from "#src/core/orchestrator.js";
 import { createEventLog, readRecentEvents } from "#src/logging/log.js";
-import { createProcessRunner } from "#src/process/runner.js";
+import {
+  createProcessRunner,
+  type ProcessResult,
+  type ProcessRunner,
+} from "#src/process/runner.js";
 import { createStateStore } from "#src/state/store.js";
+import {
+  NO_TELEMETRY,
+  type Span,
+  type Telemetry,
+} from "#src/telemetry/otlp.js";
 import { createFakeAdapter, type FakeScript } from "../support/fake-adapter.js";
 
 let directory: string;
@@ -33,6 +42,63 @@ const at = (localTime: string, day = "07"): number =>
 const config = (yaml = ""): AgentWakerConfig =>
   parseConfig(`version: 1\ntimezone: Europe/Rome\n${yaml}`, "config.yaml");
 
+/** A span as a test can look at it, once it has been closed. */
+interface RecordedSpan {
+  readonly name: string;
+  readonly attributes: Record<string, unknown>;
+  /** Events attached to this span, which is the linkage worth asserting. */
+  readonly logs: string[];
+  error?: string;
+  ended: boolean;
+}
+
+interface Recorder extends Telemetry {
+  readonly spans: RecordedSpan[];
+  readonly logged: { event: string; level: string }[];
+}
+
+/** Telemetry that keeps what it was given, rather than sending it anywhere. */
+function recorder(): Recorder {
+  const spans: RecordedSpan[] = [];
+  const logged: { event: string; level: string }[] = [];
+
+  const open = (
+    name: string,
+    attributes: Readonly<Record<string, unknown>> = {},
+  ): Span => {
+    const recorded: RecordedSpan = {
+      name,
+      attributes: { ...attributes },
+      logs: [],
+      ended: false,
+    };
+
+    spans.push(recorded);
+
+    return {
+      span: (childName, childAttributes) => open(childName, childAttributes),
+      log: (event) => {
+        recorded.logs.push(event.event);
+        logged.push({ event: event.event, level: event.level });
+      },
+      end: (options = {}) => {
+        Object.assign(recorded.attributes, options.attributes ?? {});
+        recorded.ended = true;
+
+        if (options.error !== undefined) recorded.error = options.error;
+      },
+    };
+  };
+
+  return {
+    spans,
+    logged,
+    span: (name, attributes) => open(name, attributes),
+    log: (event) => logged.push({ event: event.event, level: event.level }),
+    flush: () => Promise.resolve(undefined),
+  };
+}
+
 interface Harness {
   run: (
     now: number,
@@ -40,11 +106,21 @@ interface Harness {
   ) => Promise<TickResult>;
   adapters: Record<AgentId, ReturnType<typeof createFakeAdapter>>;
   events: () => Promise<string[]>;
+  levels: () => Promise<Record<string, string>>;
+  telemetry: Recorder;
+}
+
+interface HarnessOptions {
+  readonly config?: AgentWakerConfig;
+  readonly runner?: ProcessRunner;
 }
 
 const harness = (
   scripts: Partial<Record<AgentId, FakeScript>> = {},
-  configuration = config(),
+  {
+    config: configuration = config(),
+    runner = createProcessRunner(),
+  }: HarnessOptions = {},
 ): Harness => {
   const adapters = {
     claude: createFakeAdapter("claude", scripts.claude ?? {}),
@@ -52,9 +128,14 @@ const harness = (
   };
   const store = createStateStore(join(directory, "state"));
   const log = createEventLog({ directory: join(directory, "logs") });
+  const telemetry = recorder();
+  // Advances a millisecond per read, so a measured duration is non-zero and
+  // still deterministic.
+  let ticks = 0;
 
   return {
     adapters,
+    telemetry,
     run: (now, options = {}) =>
       tick(
         {
@@ -62,16 +143,25 @@ const harness = (
           store,
           registry: createRegistry([adapters.claude, adapters.codex]),
           log,
-          runner: createProcessRunner(),
+          telemetry,
+          runner,
           workDir: directory,
           runtime: "local",
           now: () => now,
+          wallClock: () => (ticks += 1),
         },
         options,
       ),
     events: async () =>
       (await readRecentEvents(join(directory, "logs"), 100)).map(
         (event) => event.event,
+      ),
+    levels: async () =>
+      Object.fromEntries(
+        (await readRecentEvents(join(directory, "logs"), 100)).map((event) => [
+          event.event,
+          event.level,
+        ]),
       ),
   };
 };
@@ -417,10 +507,12 @@ describe("probe modes", () => {
         createFakeAdapter("codex"),
       ]),
       log: createEventLog({ directory: join(directory, "logs") }),
+      telemetry: NO_TELEMETRY,
       runner: createProcessRunner(),
       workDir: directory,
       runtime: "local",
       now: () => at("07:00"),
+      wallClock: Date.now,
     });
 
     expect(phases(result)).toMatchObject({ claude: "activated" });
@@ -442,7 +534,10 @@ describe("probe modes", () => {
 
 describe("disabled agents", () => {
   it("is left alone entirely", async () => {
-    const test = harness({}, config("agents:\n  codex:\n    enabled: false\n"));
+    const test = harness(
+      {},
+      { config: config("agents:\n  codex:\n    enabled: false\n") },
+    );
 
     const result = await test.run(at("07:00"));
 
@@ -517,6 +612,264 @@ describe("persistence", () => {
   });
 });
 
+/**
+ * A runner that answers without starting anything.
+ *
+ * Scripted like the fake adapter: one answer per call, the last repeating. An
+ * `Error` in the list is thrown rather than returned, which is what a runner
+ * that cannot start a process does.
+ */
+const stubRunner = (
+  ...answers: readonly (Partial<ProcessResult> | Error | string)[]
+): ProcessRunner => {
+  let index = -1;
+
+  return {
+    run: () => {
+      index += 1;
+
+      const answer = answers[Math.min(index, answers.length - 1)] ?? {};
+
+      if (answer instanceof Error || typeof answer === "string") {
+        // eslint-disable-next-line @typescript-eslint/prefer-promise-reject-errors -- a runner may throw anything, and that is the case under test
+        return Promise.reject(answer);
+      }
+
+      return Promise.resolve({
+        stdout: "",
+        stderr: "",
+        exitCode: 0,
+        signal: null,
+        timedOut: false,
+        truncated: { stdout: false, stderr: false },
+        durationMs: 3,
+        ...answer,
+      });
+    },
+  };
+};
+
+describe("telemetry", () => {
+  const spanNames = (test: Harness): string[] =>
+    test.telemetry.spans.map((span) => span.name);
+
+  const named = (test: Harness, name: string): RecordedSpan | undefined =>
+    test.telemetry.spans.find((span) => span.name === name);
+
+  it("traces the tick, each agent, and each provider call", async () => {
+    const test = harness(
+      { claude: { exec: ["/usr/local/bin/fake"] } },
+      { runner: stubRunner({ exitCode: 0 }) },
+    );
+
+    await test.run(at("07:00"));
+
+    expect(spanNames(test)).toEqual([
+      "agent_waker.tick",
+      "agent.activation",
+      "provider.exec",
+      "agent.activation",
+    ]);
+    expect(test.telemetry.spans.every((span) => span.ended)).toBe(true);
+    expect(named(test, "agent_waker.tick")?.attributes).toMatchObject({
+      "agent_waker.runtime": "local",
+      "agent_waker.forced": false,
+      "agent_waker.agents_evaluated": 2,
+    });
+  });
+
+  it("puts the provider's exit code and duration on the span", async () => {
+    const test = harness(
+      { claude: { exec: ["/usr/local/bin/fake"] } },
+      { runner: stubRunner({ exitCode: 3, durationMs: 42 }) },
+    );
+
+    await test.run(at("07:00"));
+
+    expect(named(test, "provider.exec")?.attributes).toMatchObject({
+      "process.executable.path": "/usr/local/bin/fake",
+      "process.exit_code": 3,
+      "process.duration_ms": 42,
+    });
+  });
+
+  it("records a timeout and a signal, which is what a hung provider looks like", async () => {
+    const test = harness(
+      { claude: { exec: ["/usr/local/bin/fake"] } },
+      {
+        runner: stubRunner({
+          exitCode: null,
+          signal: "SIGTERM",
+          timedOut: true,
+        }),
+      },
+    );
+
+    await test.run(at("07:00"));
+
+    expect(named(test, "provider.exec")?.attributes).toMatchObject({
+      "process.signal": "SIGTERM",
+      "process.timed_out": true,
+    });
+  });
+
+  it("marks a provider that could not be started", async () => {
+    const test = harness(
+      { claude: { exec: ["/usr/local/bin/fake"] } },
+      { runner: stubRunner({ exitCode: null, startFailure: "ENOENT" }) },
+    );
+
+    await test.run(at("07:00"));
+
+    expect(named(test, "provider.exec")?.attributes).toMatchObject({
+      "process.start_failure": "ENOENT",
+    });
+    expect(named(test, "provider.exec")?.error).toBe("ENOENT");
+  });
+
+  it("closes the span when the runner itself throws", async () => {
+    const test = harness(
+      { claude: { exec: ["/usr/local/bin/fake"] } },
+      { runner: stubRunner(new Error("the runner gave up")) },
+    );
+
+    await test.run(at("07:00"));
+
+    expect(named(test, "provider.exec")).toMatchObject({
+      ended: true,
+      error: "the runner gave up",
+    });
+    // An adapter that throws is a runtime problem, never a usage limit.
+    expect(named(test, "agent.activation")?.attributes).toMatchObject({
+      "agent.phase": "unhealthy",
+    });
+  });
+
+  it("closes the span when the runner throws something that is not an Error", async () => {
+    const test = harness(
+      { claude: { exec: ["/usr/local/bin/fake"] } },
+      { runner: stubRunner("a bare string, which anything may throw") },
+    );
+
+    await test.run(at("07:00"));
+
+    expect(named(test, "provider.exec")).toMatchObject({
+      ended: true,
+      error: "a bare string, which anything may throw",
+    });
+  });
+
+  it("marks only what a person has to fix as a failed span", async () => {
+    const test = harness({
+      claude: { probe: [blockedWith(undefined)] },
+      codex: {
+        auth: [{ authenticated: false, mode: "none", supportsIntent: false }],
+      },
+    });
+
+    await test.run(at("07:00"));
+
+    const [deferred, broken] = test.telemetry.spans.filter(
+      (span) => span.name === "agent.activation",
+    );
+
+    // Deferment is normal, not an error (UX §2.3).
+    expect(deferred?.error).toBeUndefined();
+    expect(deferred?.attributes).toMatchObject({
+      "agent.phase": "waiting_unknown_reset",
+    });
+    expect(broken?.error).toBeDefined();
+  });
+
+  it("attaches every event to the span it came from", async () => {
+    const test = harness();
+
+    await test.run(at("07:00"));
+
+    // The tick's own events belong to the root; an agent's belong to that
+    // agent's span, which is what makes the trace and the log join up.
+    expect(named(test, "agent_waker.tick")?.logs).toEqual(["scheduler.tick"]);
+    expect(
+      test.telemetry.spans
+        .filter((span) => span.name === "agent.activation")
+        .map((span) => span.logs),
+    ).toEqual([["agent.activated"], ["agent.activated"]]);
+  });
+
+  it("has nothing to report when nothing was due", async () => {
+    const test = harness();
+
+    expect((await test.run(at("05:00"))).notable).toBe(false);
+  });
+
+  it("has something to report when the state file had to be recovered", async () => {
+    const test = harness();
+
+    await test.run(at("07:00"));
+    // Twice, so the backup itself holds a state whose cycle is complete.
+    await test.run(at("07:30"));
+    await writeFile(join(directory, "state", "state.json"), "broken", "utf8");
+
+    // Nothing is due at this hour, but a corrupted state file is still worth a
+    // network call: it would otherwise reach the local log and nothing else.
+    const result = await test.run(at("23:00"));
+
+    expect(result.agents.every((agent) => agent.skipped !== undefined)).toBe(
+      true,
+    );
+    expect(result.notable).toBe(true);
+  });
+
+  it("traces a tick where nothing is due", async () => {
+    const test = harness();
+
+    await test.run(at("05:00"));
+
+    expect(spanNames(test)).toEqual(["agent_waker.tick"]);
+    expect(named(test, "agent_waker.tick")?.attributes).toMatchObject({
+      "agent_waker.agents_evaluated": 0,
+    });
+  });
+
+  it("does not report the exit code of an earlier call for one that threw", async () => {
+    const test = harness(
+      { claude: { exec: ["/bin/first", "/bin/second"] } },
+      { runner: stubRunner({ exitCode: 0 }, new Error("gone")) },
+    );
+
+    await test.run(at("07:00"));
+
+    const [activation] = (
+      await readRecentEvents(join(directory, "logs"), 100)
+    ).filter((event) => event.agent === "claude");
+
+    // The successful `--version` call must not stand in for the activation
+    // that never ran.
+    expect(activation?.fields.exitCode).toBeUndefined();
+  });
+
+  it("leaves a killed provider without an exit code rather than a null one", async () => {
+    const test = harness(
+      { claude: { exec: ["/usr/local/bin/fake"] } },
+      {
+        runner: stubRunner({
+          exitCode: null,
+          signal: "SIGKILL",
+          timedOut: true,
+        }),
+      },
+    );
+
+    await test.run(at("07:00"));
+
+    // OTLP has no representation for null, and an empty attribute value is
+    // worse than an absent one.
+    expect(
+      named(test, "provider.exec")?.attributes["process.exit_code"],
+    ).toBeUndefined();
+  });
+});
+
 describe("the event log", () => {
   it("records the tick and what each agent did", async () => {
     const test = harness({ claude: { probe: [blockedWith(undefined)] } });
@@ -528,6 +881,32 @@ describe("the event log", () => {
       "agent.waiting_unknown_reset",
       "agent.activated",
     ]);
+  });
+
+  it("says nothing at all when nothing was due", async () => {
+    const test = harness();
+
+    await test.run(at("05:00"));
+
+    // A minute-level scheduler logging every no-op at info drowns the log it
+    // exists to write, so the tick drops to debug (ARCHITECTURE §34).
+    expect(await test.events()).toEqual([]);
+  });
+
+  it("records how long each agent took, and the provider's exit code", async () => {
+    const test = harness(
+      { claude: { exec: ["/usr/local/bin/fake"] } },
+      { runner: stubRunner({ exitCode: 2 }) },
+    );
+
+    await test.run(at("07:00"));
+
+    const [activation] = (
+      await readRecentEvents(join(directory, "logs"), 100)
+    ).filter((event) => event.agent === "claude");
+
+    expect(activation?.fields).toMatchObject({ exitCode: 2 });
+    expect(activation?.fields.durationMs).toEqual(expect.any(Number));
   });
 
   it("records the provider's own words, which state does not keep", async () => {

@@ -2,10 +2,11 @@
  * `doctor`: what is wrong, and what to do about it.
  *
  * A composition of checks rather than a separate code path, so what it reports
- * is what the scheduler actually does. Read-only throughout: it never
- * reinstalls a provider, never restores a file macOS removed, and never
+ * is what the scheduler actually does. It changes nothing on this machine: it
+ * never reinstalls a provider, never restores a file macOS removed, and never
  * changes a setting. A diagnostic that repairs things as it goes cannot be
- * trusted to say what state a machine was in.
+ * trusted to say what state a machine was in. The one thing it sends is a
+ * probe span, and only to a collector the user configured.
  *
  * Remediation is provider-neutral and specific. "Reinstall through an official
  * method" is advice; a command that bypasses a security control is not.
@@ -127,6 +128,53 @@ async function schedulerSection(context: CommandContext): Promise<Section> {
   }
 
   return { title: "Scheduler", checks };
+}
+
+/**
+ * The export, when one is configured.
+ *
+ * A real span rather than a connection test: reaching the port proves nothing
+ * about whether the collector accepts this payload or this credential, which
+ * are the two things that actually go wrong.
+ */
+async function telemetrySection(
+  context: CommandContext,
+): Promise<Section | undefined> {
+  if (context.config.telemetry === undefined) return undefined;
+
+  const { endpoint } = context.config.telemetry;
+
+  context.telemetry.span("agent_waker.doctor").end();
+
+  const failure = await context.telemetry.flush();
+
+  return {
+    title: "Telemetry",
+    checks: [
+      failure === undefined
+        ? {
+            name: "collector accepted a trace",
+            outcome: "pass",
+            evidence: endpoint,
+          }
+        : {
+            name: "collector did not accept a trace",
+            outcome: "warn",
+            evidence: failure,
+            advice: [
+              "Scheduling is unaffected — agent waker never fails a tick over",
+              "telemetry. Traces and logs are not reaching the collector at:",
+              "",
+              `  ${endpoint}`,
+              "",
+              "Check that it is running and speaks OTLP over HTTP, or remove the",
+              "telemetry block from:",
+              "",
+              `  ${context.paths.config}`,
+            ],
+          },
+    ],
+  };
 }
 
 /** One provider: is it there, does it start, and can it do what is wanted. */
@@ -271,7 +319,13 @@ export async function doctorCommand(
   const sections: Section[] = [];
 
   // Only when looking at everything: asked about one agent, answer about it.
-  if (agents.length === 0) sections.push(await schedulerSection(context));
+  if (agents.length === 0) {
+    sections.push(await schedulerSection(context));
+
+    const telemetry = await telemetrySection(context);
+
+    if (telemetry !== undefined) sections.push(telemetry);
+  }
 
   for (const agentId of chosen) {
     sections.push(await agentSection(context, agentId));

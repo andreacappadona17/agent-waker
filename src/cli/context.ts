@@ -34,6 +34,11 @@ import {
   type SchedulerDriver,
 } from "#src/schedulers/launchd.js";
 import { createStateStore, type StateStore } from "#src/state/store.js";
+import {
+  createTelemetry,
+  NO_TELEMETRY,
+  type Telemetry,
+} from "#src/telemetry/otlp.js";
 
 /** Everything the process supplies, gathered so tests can supply it instead. */
 export interface CliEnvironment {
@@ -69,6 +74,8 @@ export interface CommandContext {
   readonly config: AgentWakerConfig;
   readonly store: StateStore;
   readonly log: EventLog;
+  /** OTLP export, or a sink that drops everything when it is not configured. */
+  readonly telemetry: Telemetry;
   readonly registry: AdapterRegistry;
   readonly runner: ProcessRunner;
 }
@@ -135,6 +142,11 @@ export async function openContext(
     await mkdir(join(paths.workDir, agentId), { recursive: true });
   }
 
+  // Configuration became somewhere credentials live the moment telemetry did.
+  // The redaction pipeline only knew about the environment, so the collector's
+  // own token is named to it explicitly.
+  const telemetrySecrets = Object.values(config.telemetry?.headers ?? {});
+
   return {
     environment,
     paths,
@@ -143,8 +155,18 @@ export async function openContext(
     log: createEventLog({
       directory: paths.logDir,
       timezone: config.timezone,
+      level: config.logging.level,
       env: environment.env,
+      secrets: telemetrySecrets,
     }),
+    telemetry:
+      config.telemetry === undefined
+        ? NO_TELEMETRY
+        : createTelemetry({
+            ...config.telemetry,
+            env: environment.env,
+            secrets: telemetrySecrets,
+          }),
     registry: environment.registry ?? defaultRegistry(),
     runner: environment.runner ?? createProcessRunner({ env: environment.env }),
   };
