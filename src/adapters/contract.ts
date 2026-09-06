@@ -92,8 +92,14 @@ export interface AgentAdapter {
     detection: DetectionResult,
   ): Promise<AuthResult>;
 
-  /** A cheap check that does not consume the window. */
-  probe(
+  /**
+   * A cheap check that does not consume the window.
+   *
+   * Omitted when `probeMode` is `activation_is_probe`, which is the common
+   * case: a provider that will not tell you whether you are rate limited
+   * without being asked to do something.
+   */
+  probe?(
     context: AdapterContext,
     detection: DetectionResult,
     auth: AuthResult,

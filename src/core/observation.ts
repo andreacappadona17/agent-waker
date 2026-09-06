@@ -39,6 +39,13 @@ export interface BlockedObservation {
     "rolling_window" | "weekly_limit" | "quota" | "account" | "unknown";
   /** Every limit the adapter could identify; the core picks the latest. */
   readonly constraints: readonly BlockingConstraint[];
+  /**
+   * What the provider actually said, for the log.
+   *
+   * The single most useful line when a user asks why their morning was not
+   * warmed up. Logged, never persisted: state keeps no raw provider output.
+   */
+  readonly detail?: string;
 }
 
 /** The provider cannot be used until the user fixes their credentials. */

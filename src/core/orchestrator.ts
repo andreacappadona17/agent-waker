@@ -135,7 +135,8 @@ async function observe(
     // A provider with no cheap status check has to let the activation itself
     // report the block, so there is no double call.
     const probed =
-      adapter.capabilities.probeMode === "separate"
+      adapter.capabilities.probeMode === "separate" &&
+      adapter.probe !== undefined
         ? await adapter.probe(context, detection, auth)
         : ({ kind: "available" } as const);
 
@@ -237,6 +238,12 @@ export async function tick(
         now,
       });
       const next = applyObservation(effective, rolled, observation, now);
+      // The provider's own words go to the log and no further: state holds the
+      // classification, not raw output.
+      const detail =
+        observation.kind === "blocked" || observation.kind === "unknown"
+          ? observation.detail
+          : undefined;
 
       agents[agentId] = next;
       outcomes.push(outcomeOf(agentId, next));
@@ -254,6 +261,7 @@ export async function tick(
         agent: agentId,
         fields: {
           ...(next.reason === undefined ? {} : { reason: next.reason }),
+          ...(detail === undefined ? {} : { detail }),
           ...(next.nextAttemptAt === undefined
             ? {}
             : { nextAttemptAt: new Date(next.nextAttemptAt).toISOString() }),

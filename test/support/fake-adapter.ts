@@ -68,10 +68,12 @@ export function createFakeAdapter(
 ): FakeAdapter {
   const calls = { detect: 0, auth: 0, probe: 0, activate: 0 };
 
+  const probeMode = script.probeMode ?? "separate";
+
   return {
     id,
     displayName: `Fake ${id}`,
-    capabilities: { probeMode: script.probeMode ?? "separate" },
+    capabilities: { probeMode },
     calls,
 
     detect(): Promise<DetectionResult> {
@@ -86,11 +88,19 @@ export function createFakeAdapter(
       return Promise.resolve(step(script.auth, index, SUBSCRIBED));
     },
 
-    probe(): Promise<AgentObservation> {
-      const index = calls.probe++;
+    // Omitted entirely when the activation is the probe, which is what a real
+    // adapter does rather than shipping a method nothing calls.
+    ...(probeMode === "activation_is_probe"
+      ? {}
+      : {
+          probe(): Promise<AgentObservation> {
+            const index = calls.probe++;
 
-      return Promise.resolve(step(script.probe, index, { kind: "available" }));
-    },
+            return Promise.resolve(
+              step(script.probe, index, { kind: "available" }),
+            );
+          },
+        }),
 
     activate(): Promise<AgentObservation> {
       const index = calls.activate++;

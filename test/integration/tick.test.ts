@@ -402,6 +402,30 @@ describe("probe modes", () => {
     expect(test.adapters.claude.calls.activate).toBe(1);
   });
 
+  it("activates when an adapter declares a probe it does not implement", async () => {
+    // A contract slip, not a user's problem: activating is what the other
+    // probe mode does anyway, so the tick proceeds rather than stalling.
+    const base = createFakeAdapter("claude", {
+      probeMode: "activation_is_probe",
+    });
+    const store = createStateStore(join(directory, "state"));
+    const result = await tick({
+      config: config(),
+      store,
+      registry: createRegistry([
+        { ...base, capabilities: { probeMode: "separate" } },
+        createFakeAdapter("codex"),
+      ]),
+      log: createEventLog({ directory: join(directory, "logs") }),
+      runner: createProcessRunner(),
+      workDir: directory,
+      runtime: "local",
+      now: () => at("07:00"),
+    });
+
+    expect(phases(result)).toMatchObject({ claude: "activated" });
+  });
+
   it("takes a block reported by the activation itself", async () => {
     const test = harness({
       claude: {
@@ -504,6 +528,47 @@ describe("the event log", () => {
       "agent.waiting_unknown_reset",
       "agent.activated",
     ]);
+  });
+
+  it("records the provider's own words, which state does not keep", async () => {
+    const test = harness({
+      claude: {
+        probe: [
+          {
+            kind: "blocked",
+            reason: "quota",
+            constraints: [{ type: "quota", confidence: "high" }],
+            detail: "You've hit your usage limit.",
+          },
+        ],
+      },
+    });
+
+    await test.run(at("07:00"));
+
+    const logged = await readRecentEvents(join(directory, "logs"), 100);
+    const blocked = logged.find((event) => event.agent === "claude");
+
+    expect(blocked?.fields.detail).toBe("You've hit your usage limit.");
+
+    // The classification is persisted; the message is not.
+    expect(
+      await readFile(join(directory, "state", "state.json"), "utf8"),
+    ).not.toContain("usage limit");
+  });
+
+  it("records an unclassified response the same way", async () => {
+    const test = harness({
+      claude: { probe: [{ kind: "unknown", detail: "something unfamiliar" }] },
+    });
+
+    await test.run(at("07:00"));
+
+    const logged = await readRecentEvents(join(directory, "logs"), 100);
+
+    expect(
+      logged.find((event) => event.agent === "claude")?.fields.detail,
+    ).toBe("something unfamiliar");
   });
 
   it("warns when the state file had to be recovered from the backup", async () => {
