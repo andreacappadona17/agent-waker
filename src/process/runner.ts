@@ -8,7 +8,7 @@
  * process that overruns its budget is killed along with anything it started.
  */
 
-import { spawn } from "node:child_process";
+import { spawn, type ChildProcess } from "node:child_process";
 
 /** Budgets from the architecture, matched to how much work each call does. */
 export const TIMEOUTS = {
@@ -191,8 +191,10 @@ export function createProcessRunner(
       const stdinText =
         typeof spec.stdin === "object" ? spec.stdin.text : undefined;
 
-      return new Promise<ProcessResult>((resolve) => {
-        const child = spawn(spec.executable, [...spec.args], {
+      let child: ChildProcess;
+
+      try {
+        child = spawn(spec.executable, [...spec.args], {
           ...(spec.cwd === undefined ? {} : { cwd: spec.cwd }),
           env: buildEnv(baseEnv, allow, spec.env),
           // No shell, ever: an argument is an argument, never a fragment of a
@@ -203,7 +205,24 @@ export function createProcessRunner(
           detached: true,
           stdio: [stdinText === undefined ? "ignore" : "pipe", "pipe", "pipe"],
         });
+      } catch (error) {
+        // Some failures arrive synchronously rather than as an error event —
+        // a file that is executable but not in any format the kernel can run,
+        // which is what a truncated download looks like. A scheduler must
+        // classify that, not crash on it.
+        return Promise.resolve({
+          stdout: "",
+          stderr: "",
+          exitCode: null,
+          signal: null,
+          timedOut: false,
+          truncated: { stdout: false, stderr: false },
+          durationMs: Date.now() - startedAt,
+          startFailure: (error as NodeJS.ErrnoException).code ?? "SPAWN_FAILED",
+        });
+      }
 
+      return new Promise<ProcessResult>((resolve) => {
         let timedOut = false;
         let settled = false;
 

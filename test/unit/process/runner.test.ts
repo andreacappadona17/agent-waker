@@ -1,4 +1,11 @@
-import { mkdtemp, readFile, realpath, rm } from "node:fs/promises";
+import {
+  chmod,
+  mkdtemp,
+  readFile,
+  realpath,
+  rm,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -87,6 +94,23 @@ describe("run", () => {
     });
 
     expect(result).toMatchObject({ startFailure: "ENOENT", exitCode: null });
+  });
+
+  it("reports a file that cannot be executed at all", async () => {
+    // Executable bit set, but nothing the kernel can run: a truncated download,
+    // or a native component the OS quarantined and replaced.
+    const path = join(directory, "not-a-program");
+
+    await writeFile(path, Buffer.from([0xcf, 0xfa, 0xed, 0xfe]));
+    await chmod(path, 0o755);
+
+    const result = await runner.run({
+      executable: path,
+      args: [],
+      timeoutMs: 1_000,
+    });
+
+    expect(result).toMatchObject({ startFailure: "ENOEXEC", exitCode: null });
   });
 
   describe("stdin", () => {
