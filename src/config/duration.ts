@@ -5,6 +5,8 @@
  * stay unambiguous.
  */
 
+import { describeValue } from "#src/core/describe.js";
+
 // A Map, not an object literal: the key comes from a regex match, so a miss
 // must return undefined rather than find something on Object.prototype.
 const UNIT_MS = new Map<string, number>([
@@ -28,9 +30,6 @@ export const EXAMPLE_DURATIONS: readonly string[] = [
   "7d",
 ];
 
-// Configured values are echoed back to the user, so cap what we repeat.
-const MAX_ECHOED_LENGTH = 64;
-
 /** Raised when a configured value cannot be used as a duration. */
 export class InvalidDurationError extends Error {
   /** The original value, untrimmed, so a caller can find it in the source file. */
@@ -40,29 +39,6 @@ export class InvalidDurationError extends Error {
     super(message);
     this.name = "InvalidDurationError";
     this.value = value;
-  }
-}
-
-/** Renders an untrusted configuration value for display. Never throws. */
-function describe(value: unknown): string {
-  switch (typeof value) {
-    case "string": {
-      const clipped =
-        value.length > MAX_ECHOED_LENGTH
-          ? `${value.slice(0, MAX_ECHOED_LENGTH)}…`
-          : value;
-      // JSON.stringify escapes control characters, so a crafted value cannot
-      // inject terminal escapes into our output.
-      return JSON.stringify(clipped);
-    }
-    case "number":
-    case "boolean":
-    case "bigint":
-    case "undefined":
-      return String(value);
-    default:
-      // Shape only; stringifying could reintroduce control characters.
-      return value === null ? "null" : `a ${typeof value}`;
   }
 }
 
@@ -83,7 +59,7 @@ export function parseDuration(input: unknown): number {
   if (multiplier === undefined) {
     throw new InvalidDurationError(
       input,
-      `Expected a duration such as ${EXAMPLE_DURATIONS.join(", ")}, but received ${describe(input)}.`,
+      `Expected a duration such as ${EXAMPLE_DURATIONS.join(", ")}, but received ${describeValue(input)}.`,
     );
   }
 
@@ -94,7 +70,7 @@ export function parseDuration(input: unknown): number {
     const maximum = Math.floor(Number.MAX_SAFE_INTEGER / multiplier);
     throw new InvalidDurationError(
       input,
-      `Duration ${describe(input)} is too large; the maximum is ${String(maximum)}${unit}.`,
+      `Duration ${describeValue(input)} is too large; the maximum is ${String(maximum)}${unit}.`,
     );
   }
 
