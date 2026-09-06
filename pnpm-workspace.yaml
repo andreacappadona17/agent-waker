@@ -1,0 +1,7 @@
+# Refuse packages published less than two days ago: compromised npm releases are
+# usually detected and pulled within 24-48 hours.
+#
+# minimumReleaseAgeExclude is deliberately absent. When this blocks an install,
+# pin the newest version that satisfies the policy rather than adding an
+# exception, and say so in the commit message.
+minimumReleaseAge: 2880

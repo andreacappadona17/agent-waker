@@ -7,3 +7,6 @@ coverage/
 .env.*
 
 .DS_Store
+
+# Generated software bill of materials.
+sbom.cdx.json*

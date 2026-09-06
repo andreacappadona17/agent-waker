@@ -1,0 +1,7 @@
+# Only checks that scale with the diff, so this stays fast and nobody reaches
+# for --no-verify. Repository-wide checks run on pre-push.
+pnpm exec lint-staged
+
+# After lint-staged, so the scan sees exactly the bytes being committed. Fails
+# closed: a leaked credential is the one mistake a later commit cannot undo.
+./scripts/tool.sh gitleaks git --pre-commit --staged --redact --no-banner

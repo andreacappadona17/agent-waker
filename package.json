@@ -43,13 +43,21 @@
     "lint": "eslint .",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
-    "verify": "pnpm run format:check && pnpm run lint && pnpm run typecheck && pnpm run build && pnpm run test:coverage"
+    "scan:secrets": "./scripts/tool.sh gitleaks git --redact --no-banner",
+    "scan:deps": "pnpm audit --audit-level=moderate",
+    "sbom": "./scripts/tool.sh syft scan file:pnpm-lock.yaml -o cyclonedx-json -q > sbom.cdx.json.tmp && mv sbom.cdx.json.tmp sbom.cdx.json",
+    "verify": "pnpm run format:check && pnpm run lint && pnpm run typecheck && pnpm run build && pnpm run test:coverage",
+    "prepare": "husky"
   },
   "devDependencies": {
+    "@commitlint/cli": "21.2.2",
+    "@commitlint/config-conventional": "21.2.2",
     "@eslint/js": "10.0.1",
     "@types/node": "24.13.3",
     "@vitest/coverage-v8": "5.0.0",
-    "eslint": "10.10.0",
+    "eslint": "10.9.1",
+    "husky": "9.1.7",
+    "lint-staged": "17.4.1",
     "prettier": "3.9.6",
     "typescript": "6.0.3",
     "typescript-eslint": "8.69.0",

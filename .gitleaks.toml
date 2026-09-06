@@ -1,0 +1,24 @@
+# gitleaks configuration for agent waker.
+#
+# The default ruleset is used in full; only additions and narrow, commented
+# exceptions belong here.
+[extend]
+useDefault = true
+
+# Refuse to run on a gitleaks too old to understand this file, rather than
+# silently parsing it with different semantics.
+minVersion = "8.30.0"
+
+# The default rules cover sk-ant-api03- but NOT the long-lived OAuth token that
+# `claude setup-token` mints. That token is exactly what this project's own
+# GitHub runtime stores as CLAUDE_CODE_OAUTH_TOKEN (docs/PRD.md section 12.1),
+# so the one credential the threat model names would otherwise go undetected.
+[[rules]]
+id = "claude-code-oauth-token"
+description = "Claude Code long-lived OAuth token"
+regex = '''sk-ant-(?:oat|sid)[0-9]{2}-[\w-]{80,}'''
+keywords = ["sk-ant-"]
+
+[allowlist]
+description = "Files that describe secrets without containing them."
+paths = ['''\.gitleaks\.toml$''']
