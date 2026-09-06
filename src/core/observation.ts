@@ -21,3 +21,75 @@ export interface BlockingConstraint {
    */
   readonly confidence: "high" | "medium" | "low";
 }
+
+/** The activation ran and the provider answered. The daily cycle is complete. */
+export interface ActivatedObservation {
+  readonly kind: "activated";
+}
+
+/** A probe found the window open. Nothing has run yet. */
+export interface AvailableObservation {
+  readonly kind: "available";
+}
+
+/** The provider refused to run because of a usage limit. */
+export interface BlockedObservation {
+  readonly kind: "blocked";
+  readonly reason:
+    "rolling_window" | "weekly_limit" | "quota" | "account" | "unknown";
+  /** Every limit the adapter could identify; the core picks the latest. */
+  readonly constraints: readonly BlockingConstraint[];
+}
+
+/** The provider cannot be used until the user fixes their credentials. */
+export interface AuthObservation {
+  readonly kind: "auth_error";
+  readonly state:
+    | "not_authenticated"
+    | "expired"
+    | "unsupported_auth"
+    | "api_billing_only"
+    | "unknown";
+  readonly message: string;
+}
+
+/** The provider is installed wrong, missing, or would not run. */
+export interface HealthObservation {
+  readonly kind: "runtime_error";
+  readonly category:
+    | "executable_missing"
+    | "dependency_missing"
+    | "broken_install"
+    | "permission"
+    | "timeout"
+    | "malformed_output"
+    | "unknown";
+}
+
+/** Something outside the provider failed and is expected to recover. */
+export interface TransientObservation {
+  readonly kind: "transient_error";
+  readonly category:
+    "network" | "provider_unavailable" | "dns" | "tls" | "unknown";
+}
+
+/**
+ * The adapter could not classify what it saw.
+ *
+ * Provider CLIs change without notice, so this is a normal outcome rather than
+ * a bug. Reporting it beats guessing a reset time that is not there.
+ */
+export interface UnknownObservation {
+  readonly kind: "unknown";
+  readonly detail: string;
+}
+
+/** Everything an adapter can report, from a probe or from an activation. */
+export type AgentObservation =
+  | ActivatedObservation
+  | AvailableObservation
+  | BlockedObservation
+  | AuthObservation
+  | HealthObservation
+  | TransientObservation
+  | UnknownObservation;
