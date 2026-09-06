@@ -128,17 +128,27 @@ class CappedOutput {
     this.tail.push(chunk);
     this.tailBytes += chunk.length;
 
-    // Keep the deque bounded: the oldest chunk goes as soon as it is surplus.
-    while (this.tail.length > 1) {
+    // Trim to a byte budget, not to a chunk boundary. A pipe hands over
+    // whatever the kernel had buffered, so dropping only whole chunks leaves
+    // the cap at the mercy of how the reads happened to land — and a single
+    // chunk larger than the budget would never be trimmed at all.
+    while (this.tailBytes > this.half) {
       const oldest = this.tail[0];
 
-      if (oldest === undefined || this.tailBytes - oldest.length < this.half) {
-        break;
+      if (oldest === undefined) break;
+
+      const surplus = this.tailBytes - this.half;
+
+      if (oldest.length <= surplus) {
+        this.dropped += oldest.length;
+        this.tailBytes -= oldest.length;
+        this.tail.shift();
+        continue;
       }
 
-      this.dropped += oldest.length;
-      this.tailBytes -= oldest.length;
-      this.tail.shift();
+      this.tail[0] = oldest.subarray(surplus);
+      this.dropped += surplus;
+      this.tailBytes -= surplus;
     }
   }
 

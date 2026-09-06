@@ -193,6 +193,9 @@ describe("run", () => {
       expect(result.stdout.startsWith("START")).toBe(true);
       expect(result.stdout.endsWith("END")).toBe(true);
       expect(result.stdout).toContain("truncated");
+      // One write, so the whole 50KB can arrive as a single chunk. Trimming
+      // that requires cutting into it rather than dropping it whole.
+      expect(result.stdout.length).toBeLessThanOrEqual(1_100);
     });
 
     it("caps stderr on its own budget", async () => {
