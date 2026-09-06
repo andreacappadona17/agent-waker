@@ -1,0 +1,36 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "description": "npm dependencies inherit a 3-day release-age quarantine from config:best-practices. pnpm-workspace.yaml separately enforces a 2-day floor at install time, so a Renovate pull request is never younger than CI will accept.",
+  "extends": [
+    "config:best-practices",
+    ":semanticCommits",
+    ":maintainLockFilesMonthly"
+  ],
+  "timezone": "Europe/Rome",
+  "schedule": ["before 6am on monday"],
+  "labels": ["dependencies"],
+  "packageRules": [
+    {
+      "description": "typescript-eslint 8.x declares peer typescript >=4.8.4 <6.1.0, so 6.1.x would already break it. Raise this bound when typescript-eslint widens that range; TypeScript 7's native package drops the compiler API it needs entirely.",
+      "matchPackageNames": ["typescript"],
+      "allowedVersions": "<6.1.0"
+    },
+    {
+      "description": "Batch routine dev-dependency updates into a single pull request.",
+      "matchDepTypes": ["devDependencies"],
+      "matchUpdateTypes": ["minor", "patch"],
+      "groupName": "dev dependencies"
+    }
+  ],
+  "customManagers": [
+    {
+      "customType": "regex",
+      "description": "Tool images are pinned in a shell case statement, which no built-in manager reads.",
+      "managerFilePatterns": ["/^scripts/tool\\.sh$/"],
+      "matchStrings": [
+        "image=\"(?<depName>[^:\"]+):(?<currentValue>[^@\"]+)@(?<currentDigest>sha256:[a-f0-9]+)\""
+      ],
+      "datasourceTemplate": "docker"
+    }
+  ]
+}

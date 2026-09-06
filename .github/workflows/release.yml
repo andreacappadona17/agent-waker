@@ -1,0 +1,82 @@
+name: Release
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  # Never cancel a release midway.
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    name: Prepare release
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+      pull-requests: write
+    outputs:
+      released: ${{ steps.release.outputs.release_created }}
+      tag: ${{ steps.release.outputs.tag_name }}
+      sha: ${{ steps.release.outputs.sha }}
+    steps:
+      # Maintains a rolling release pull request from Conventional Commits.
+      # Merging it bumps the version, writes CHANGELOG.md and cuts the release.
+      #
+      # Publishing to npm is deliberately not wired up. Adding it requires, in
+      # one change: removing "private": true from package.json, giving the
+      # package a real entry point (bin/exports), and configuring npm trusted
+      # publishing. Until then a release is a GitHub release only.
+      - name: Run release-please
+        id: release
+        uses: googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7 # v5.0.0
+        with:
+          # A PAT makes the release pull request trigger CI; pull requests
+          # authored by GITHUB_TOKEN do not. Prefer a fine-grained token
+          # limited to this repository with Contents and Pull requests
+          # write. Without it the fallback still works, but release pull
+          # requests will not run CI.
+          token: ${{ secrets.RELEASE_PLEASE_TOKEN || secrets.GITHUB_TOKEN }}
+
+  sbom:
+    name: Attach SBOM
+    needs: prepare
+    if: needs.prepare.outputs.released == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      # A tag is mutable and could be repointed between jobs, and an empty
+      # ref makes checkout silently fall back to the pushed main HEAD. The
+      # commit sha is neither.
+      - name: Require a released commit
+        env:
+          SHA: ${{ needs.prepare.outputs.sha }}
+          TAG: ${{ needs.prepare.outputs.tag }}
+        run: |
+          test -n "$SHA" || { echo "release-please emitted no sha" >&2; exit 1; }
+          test -n "$TAG" || { echo "release-please emitted no tag" >&2; exit 1; }
+
+      - name: Check out the released commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.prepare.outputs.sha }}
+          persist-credentials: false
+
+      - name: Set up toolchain
+        uses: ./.github/actions/setup
+
+      - name: Generate CycloneDX SBOM
+        run: pnpm run sbom
+
+      - name: Attach the SBOM to the release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ needs.prepare.outputs.tag }}
+        run: gh release upload "$TAG" sbom.cdx.json --clobber
