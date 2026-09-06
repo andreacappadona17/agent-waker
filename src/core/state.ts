@@ -18,17 +18,20 @@ import type { Instant, LocalDate } from "#src/core/time.js";
  * may enter the quota backoff ladder, because retrying them costs the user
  * nothing to fix and everything to wait for.
  */
-export type AgentPhase =
-  | "idle"
-  | "ready"
-  | "activated"
-  | "waiting_known_reset"
-  | "waiting_unknown_reset"
-  | "long_term_block"
-  | "auth_required"
-  | "unhealthy"
-  | "transient_error"
-  | "failed";
+export const AGENT_PHASES = [
+  "idle",
+  "ready",
+  "activated",
+  "waiting_known_reset",
+  "waiting_unknown_reset",
+  "long_term_block",
+  "auth_required",
+  "unhealthy",
+  "transient_error",
+  "failed",
+] as const;
+
+export type AgentPhase = (typeof AGENT_PHASES)[number];
 
 /** One agent's persisted state. */
 export interface AgentState {
