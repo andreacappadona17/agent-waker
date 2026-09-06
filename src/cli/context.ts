@@ -28,6 +28,11 @@ import {
   createProcessRunner,
   type ProcessRunner,
 } from "#src/process/runner.js";
+import {
+  createLaunchdScheduler,
+  LAUNCHER_NAME,
+  type SchedulerDriver,
+} from "#src/schedulers/launchd.js";
 import { createStateStore, type StateStore } from "#src/state/store.js";
 
 /** Everything the process supplies, gathered so tests can supply it instead. */
@@ -41,6 +46,18 @@ export interface CliEnvironment {
   readonly now: () => Instant;
   write(text: string): void;
   writeError(text: string): void;
+  /** The interpreter and script to record in the scheduler's launcher. */
+  readonly execPath: string;
+  readonly entrypoint: string;
+  /** What the machine's clock is set to, offered as the default at setup. */
+  readonly systemTimezone: string;
+  /**
+   * Asks the user something, or returns the fallback when nobody is there.
+   *
+   * Absent whenever input is not a terminal, which is what makes `init` safe
+   * to run from a script.
+   */
+  readonly ask?: (question: string, fallback: string) => Promise<string>;
   /** Overridden in tests; the real adapters otherwise. */
   readonly registry?: AdapterRegistry;
   readonly runner?: ProcessRunner;
@@ -66,6 +83,16 @@ export class NotInitialisedError extends Error {
   }
 }
 
+/** The scheduler driver, wired to this machine's resolved paths. */
+export function schedulerFor(context: CommandContext): SchedulerDriver {
+  return createLaunchdScheduler({
+    runner: context.runner,
+    home: context.environment.home,
+    uid: context.environment.uid,
+    launcherPath: join(context.paths.launcherDir, LAUNCHER_NAME),
+  });
+}
+
 /** The adapters this build ships. */
 export function defaultRegistry(): AdapterRegistry {
   return createRegistry([createClaudeAdapter(), createCodexAdapter()]);
@@ -79,18 +106,24 @@ export function defaultRegistry(): AdapterRegistry {
  */
 export async function openContext(
   environment: CliEnvironment,
+  options: { allowMissingConfig?: boolean } = {},
 ): Promise<CommandContext> {
   const paths = resolvePaths(environment.env, environment.home);
+  const source = await readFile(paths.config, "utf8").catch(() => undefined);
 
-  let source: string;
-
-  try {
-    source = await readFile(paths.config, "utf8");
-  } catch {
+  if (source === undefined && options.allowMissingConfig !== true) {
     throw new NotInitialisedError(paths.config);
   }
 
-  const config = parseConfig(source, paths.config);
+  // `init` and `uninstall` have to work before there is a file, and after one
+  // has been removed. They get the defaults, which is what init would write.
+  const config =
+    source === undefined
+      ? parseConfig(
+          `version: 1\ntimezone: ${environment.systemTimezone}\n`,
+          paths.config,
+        )
+      : parseConfig(source, paths.config);
 
   // Providers are spawned with this as their working directory. Spawning into
   // a directory that does not exist fails with ENOENT, which is

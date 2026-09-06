@@ -93,7 +93,7 @@ const installConfig = {
 const plistPath = (): string =>
   join(home, "Library", "LaunchAgents", `${DEFAULT_LABEL}.plist`);
 const launcherPath = (): string =>
-  join(home, ".local", "share", "agent-waker", "bin", "agent-waker-runner");
+  join(home, "somewhere", "else", "agent-waker-runner");
 
 describe("renderPlist", () => {
   const plist = renderPlist({
@@ -229,9 +229,12 @@ describe("install", () => {
   it("writes the launcher and the plist, then loads the job", async () => {
     const { runner, specs } = recording();
 
-    await createLaunchdScheduler({ runner, home, uid: 501 }).install(
-      installConfig,
-    );
+    await createLaunchdScheduler({
+      runner,
+      home,
+      uid: 501,
+      launcherPath: launcherPath(),
+    }).install(installConfig);
 
     expect(await readFile(launcherPath(), "utf8")).toContain(
       "/opt/node/bin/node",
@@ -249,21 +252,42 @@ describe("install", () => {
   it("makes the launcher executable and the plist not", async () => {
     const { runner } = recording();
 
-    await createLaunchdScheduler({ runner, home, uid: 501 }).install(
-      installConfig,
-    );
+    await createLaunchdScheduler({
+      runner,
+      home,
+      uid: 501,
+      launcherPath: launcherPath(),
+    }).install(installConfig);
 
     expect((await stat(launcherPath())).mode & 0o777).toBe(0o755);
     expect((await stat(plistPath())).mode & 0o777).toBe(0o644);
+  });
+
+  it("writes the launcher where it was told to, not where it guessed", async () => {
+    // It follows the same XDG resolution as everything else this program owns;
+    // deriving it from the home directory ignored XDG_DATA_HOME entirely.
+    const { runner } = recording();
+
+    await createLaunchdScheduler({
+      runner,
+      home,
+      uid: 501,
+      launcherPath: launcherPath(),
+    }).install(installConfig);
+
+    expect(await readFile(launcherPath(), "utf8")).toContain("exec ");
   });
 
   it("points launchd at the stable launcher, never at Node directly", async () => {
     // Embedding an nvm path in a plist is how this breaks six weeks later.
     const { runner } = recording();
 
-    await createLaunchdScheduler({ runner, home, uid: 501 }).install(
-      installConfig,
-    );
+    await createLaunchdScheduler({
+      runner,
+      home,
+      uid: 501,
+      launcherPath: launcherPath(),
+    }).install(installConfig);
 
     const plist = await readFile(plistPath(), "utf8");
 
@@ -274,9 +298,12 @@ describe("install", () => {
   it("unloads any previous job before loading the new one", async () => {
     const { runner, specs } = recording();
 
-    await createLaunchdScheduler({ runner, home, uid: 501 }).install(
-      installConfig,
-    );
+    await createLaunchdScheduler({
+      runner,
+      home,
+      uid: 501,
+      launcherPath: launcherPath(),
+    }).install(installConfig);
 
     const commands = specs.map((spec) => spec.args.join(" "));
     const bootout = commands.findIndex((command) =>
@@ -293,7 +320,12 @@ describe("install", () => {
   it("can be run twice without complaint", async () => {
     // The second run is the update path, and updates must not need an uninstall.
     const { runner } = recording();
-    const scheduler = createLaunchdScheduler({ runner, home, uid: 501 });
+    const scheduler = createLaunchdScheduler({
+      runner,
+      home,
+      uid: 501,
+      launcherPath: launcherPath(),
+    });
 
     await scheduler.install(installConfig);
     await scheduler.install({ ...installConfig, intervalSeconds: 120 });
@@ -312,7 +344,12 @@ describe("install", () => {
     );
 
     await expect(
-      createLaunchdScheduler({ runner, home, uid: 501 }).install(installConfig),
+      createLaunchdScheduler({
+        runner,
+        home,
+        uid: 501,
+        launcherPath: launcherPath(),
+      }).install(installConfig),
     ).rejects.toThrow(/plist/i);
 
     expect(
@@ -328,7 +365,12 @@ describe("install", () => {
     );
 
     await expect(
-      createLaunchdScheduler({ runner, home, uid: 501 }).install(installConfig),
+      createLaunchdScheduler({
+        runner,
+        home,
+        uid: 501,
+        launcherPath: launcherPath(),
+      }).install(installConfig),
     ).rejects.toThrow(/launchctl/i);
   });
 });
@@ -338,13 +380,23 @@ describe("inspect", () => {
     const { runner } = recording();
 
     expect(
-      await createLaunchdScheduler({ runner, home, uid: 501 }).inspect(),
+      await createLaunchdScheduler({
+        runner,
+        home,
+        uid: 501,
+        launcherPath: launcherPath(),
+      }).inspect(),
     ).toMatchObject({ installed: false, loaded: false });
   });
 
   it("reports an installed and loaded job", async () => {
     const { runner } = recording();
-    const scheduler = createLaunchdScheduler({ runner, home, uid: 501 });
+    const scheduler = createLaunchdScheduler({
+      runner,
+      home,
+      uid: 501,
+      launcherPath: launcherPath(),
+    });
 
     await scheduler.install(installConfig);
     await mkdir(join(home, "opt"), { recursive: true });
@@ -360,7 +412,12 @@ describe("inspect", () => {
     const { runner } = recording((spec) =>
       spec.args.includes("print") ? ok({ exitCode: 113 }) : ok(),
     );
-    const scheduler = createLaunchdScheduler({ runner, home, uid: 501 });
+    const scheduler = createLaunchdScheduler({
+      runner,
+      home,
+      uid: 501,
+      launcherPath: launcherPath(),
+    });
 
     await scheduler.install(installConfig);
 
@@ -373,7 +430,12 @@ describe("inspect", () => {
   it("notices when the launcher the plist names has been removed", async () => {
     // The uninstall that only removed half of itself, or a cleaned-up home.
     const { runner } = recording();
-    const scheduler = createLaunchdScheduler({ runner, home, uid: 501 });
+    const scheduler = createLaunchdScheduler({
+      runner,
+      home,
+      uid: 501,
+      launcherPath: launcherPath(),
+    });
 
     await scheduler.install(installConfig);
     await rm(launcherPath());
@@ -383,7 +445,12 @@ describe("inspect", () => {
 
   it("does not call a working install stale", async () => {
     const { runner } = recording();
-    const scheduler = createLaunchdScheduler({ runner, home, uid: 501 });
+    const scheduler = createLaunchdScheduler({
+      runner,
+      home,
+      uid: 501,
+      launcherPath: launcherPath(),
+    });
 
     await scheduler.install(installConfig);
 
@@ -394,7 +461,12 @@ describe("inspect", () => {
 describe("uninstall", () => {
   it("unloads the job and removes what it wrote", async () => {
     const { runner, specs } = recording();
-    const scheduler = createLaunchdScheduler({ runner, home, uid: 501 });
+    const scheduler = createLaunchdScheduler({
+      runner,
+      home,
+      uid: 501,
+      launcherPath: launcherPath(),
+    });
 
     await scheduler.install(installConfig);
     await scheduler.uninstall();
@@ -418,7 +490,12 @@ describe("uninstall", () => {
           })
         : ok(),
     );
-    const scheduler = createLaunchdScheduler({ runner, home, uid: 501 });
+    const scheduler = createLaunchdScheduler({
+      runner,
+      home,
+      uid: 501,
+      launcherPath: launcherPath(),
+    });
 
     await scheduler.install(installConfig);
     installed = true;
@@ -431,7 +508,12 @@ describe("uninstall", () => {
     const { runner } = recording(() => ok({ exitCode: 113 }));
 
     await expect(
-      createLaunchdScheduler({ runner, home, uid: 501 }).uninstall(),
+      createLaunchdScheduler({
+        runner,
+        home,
+        uid: 501,
+        launcherPath: launcherPath(),
+      }).uninstall(),
     ).resolves.toBeUndefined();
   });
 });

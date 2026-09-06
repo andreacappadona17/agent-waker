@@ -13,11 +13,10 @@
 
 import { join } from "node:path";
 
-import type { CommandContext } from "#src/cli/context.js";
+import { schedulerFor, type CommandContext } from "#src/cli/context.js";
 import { EXIT, type ExitCode } from "#src/cli/exit.js";
 import { iconFor, supportsUnicode } from "#src/cli/format.js";
 import { AGENT_IDS, type AgentId } from "#src/core/agent.js";
-import { createLaunchdScheduler } from "#src/schedulers/launchd.js";
 
 type Outcome = "pass" | "warn" | "fail";
 
@@ -78,11 +77,7 @@ async function schedulerSection(context: CommandContext): Promise<Section> {
         },
   );
 
-  const scheduler = await createLaunchdScheduler({
-    runner: context.runner,
-    home: context.environment.home,
-    uid: context.environment.uid,
-  }).inspect();
+  const scheduler = await schedulerFor(context).inspect();
 
   if (!scheduler.installed) {
     checks.push({

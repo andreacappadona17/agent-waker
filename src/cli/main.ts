@@ -14,6 +14,8 @@ import {
   type CliEnvironment,
 } from "#src/cli/context.js";
 import { detectCommand } from "#src/cli/detect.js";
+import { initCommand, repairCommand } from "#src/cli/init.js";
+import { uninstallCommand } from "#src/cli/uninstall.js";
 import { doctorCommand } from "#src/cli/doctor.js";
 import { EXIT, type ExitCode } from "#src/cli/exit.js";
 import { logsCommand } from "#src/cli/logs.js";
@@ -37,11 +39,17 @@ Commands:
   schedule set <time>     Change the desired activation time
   enable <agent...>       Include an agent in the daily cycle
   disable <agent...>      Leave an agent out of it
+  init                    Set up the configuration and the scheduler
+  uninstall               Remove what agent waker installed
   help                    Show this message
 
 Options:
   --timezone <zone>       With schedule set, change the zone as well
   --limit <n>             With logs, how many events to show
+  --time <hh:mm>          With init, the desired activation time
+  --repair                With init, rebuild the scheduler only
+  --logs                  With uninstall, remove the logs too
+  -y, --yes               Do not ask for confirmation
   -h, --help              Show this message
   -v, --version           Show the version
 
@@ -57,11 +65,16 @@ Exit codes:
 const AGENT_COMMANDS = new Set(["run", "enable", "disable", "doctor"]);
 
 /** Options that consume the argument after them. */
-const VALUE_OPTIONS = new Set(["--timezone", "--limit"]);
+const VALUE_OPTIONS = new Set(["--timezone", "--limit", "--time"]);
+
+/** Flags that are options rather than mistakes. */
+const KNOWN_FLAGS = new Set(["--repair", "--logs", "-y", "--yes"]);
 
 const COMMANDS = new Set([
   "status",
   "doctor",
+  "init",
+  "uninstall",
   "detect",
   "tick",
   "run",
@@ -125,6 +138,14 @@ export function parseArguments(argv: readonly string[]): ParsedCommand {
   return { command, positionals, options, flags };
 }
 
+/** Present-or-absent, so an unset option is left out rather than undefined. */
+function toOption<K extends string>(
+  key: K,
+  value: string | undefined,
+): Partial<Record<K, string>> {
+  return value === undefined ? {} : ({ [key]: value } as Record<K, string>);
+}
+
 /** Narrows positionals to agents, naming anything that is not one. */
 function asAgents(positionals: readonly string[]): AgentId[] {
   return positionals.map((value) => {
@@ -181,7 +202,9 @@ export async function run(environment: CliEnvironment): Promise<ExitCode> {
     return EXIT.usage;
   }
 
-  const [unknownFlag] = parsed.flags;
+  const [unknownFlag] = [...parsed.flags].filter(
+    (flag) => !KNOWN_FLAGS.has(flag),
+  );
 
   if (unknownFlag !== undefined) {
     environment.writeError(
@@ -205,8 +228,13 @@ export async function run(environment: CliEnvironment): Promise<ExitCode> {
     return EXIT.usage;
   }
 
+  // These two are what a machine runs before it has a configuration, and
+  // after it no longer wants one.
+  const allowMissingConfig =
+    parsed.command === "init" || parsed.command === "uninstall";
+
   try {
-    const context = await openContext(environment);
+    const context = await openContext(environment, { allowMissingConfig });
 
     switch (parsed.command) {
       case "status":
@@ -215,6 +243,18 @@ export async function run(environment: CliEnvironment): Promise<ExitCode> {
         return await detectCommand(context);
       case "doctor":
         return await doctorCommand(context, agents);
+      case "init":
+        return parsed.flags.has("--repair")
+          ? await repairCommand(context)
+          : await initCommand(context, {
+              ...toOption("time", parsed.options.get("--time")),
+              ...toOption("timezone", parsed.options.get("--timezone")),
+            });
+      case "uninstall":
+        return await uninstallCommand(context, {
+          includeLogs: parsed.flags.has("--logs"),
+          assumeYes: parsed.flags.has("-y") || parsed.flags.has("--yes"),
+        });
       case "tick":
         return await tickCommand(context);
       case "run":

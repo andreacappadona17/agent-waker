@@ -15,6 +15,7 @@ import { createRegistry } from "#src/adapters/registry.js";
 import type { CliEnvironment } from "#src/cli/context.js";
 import { EXIT } from "#src/cli/exit.js";
 import { run } from "#src/cli/main.js";
+import { DEFAULT_LABEL } from "#src/schedulers/launchd.js";
 import type { AgentObservation } from "#src/core/observation.js";
 import type { ProcessResult, ProcessRunner } from "#src/process/runner.js";
 import { createStateStore } from "#src/state/store.js";
@@ -67,6 +68,8 @@ interface Invocation {
   code: number;
   out: string;
   err: string;
+  /** What the command asked, which never appears in its output. */
+  questions: string[];
 }
 
 const invoke = async (
@@ -76,10 +79,14 @@ const invoke = async (
     now?: number;
     env?: Record<string, string | undefined>;
     isTty?: boolean;
+    /** Answers for the prompts, in order; absent means nobody is there. */
+    answers?: string[];
+    runner?: ProcessRunner;
   } = {},
 ): Promise<Invocation> => {
   let out = "";
   let err = "";
+  const questions: string[] = [];
   const environment: CliEnvironment = {
     argv,
     env: { HOME: home, LANG: "en_GB.UTF-8", ...options.env },
@@ -87,7 +94,19 @@ const invoke = async (
     platform: "darwin",
     uid: 501,
     isTty: options.isTty ?? false,
+    execPath: "/opt/node/bin/node",
+    entrypoint: "/opt/agent-waker/dist/cli/bin.js",
+    systemTimezone: "Europe/Rome",
     now: () => options.now ?? at("09:00"),
+    ...(options.answers === undefined
+      ? {}
+      : {
+          ask: (question: string, fallback: string): Promise<string> => {
+            questions.push(question);
+
+            return Promise.resolve(options.answers?.shift() ?? fallback);
+          },
+        }),
     write: (text) => {
       out += text;
     },
@@ -98,10 +117,10 @@ const invoke = async (
       createFakeAdapter("claude", options.scripts?.claude ?? {}),
       createFakeAdapter("codex", options.scripts?.codex ?? {}),
     ]),
-    runner: quietRunner,
+    runner: options.runner ?? quietRunner,
   };
 
-  return { code: await run(environment), out, err };
+  return { code: await run(environment), out, err, questions };
 };
 
 const stateFile = (): Promise<string> =>
@@ -805,5 +824,221 @@ describe("doctor", () => {
 
     expect(out).toContain("is not installed");
     expect(out).not.toContain("could not start");
+  });
+});
+
+describe("init", () => {
+  /** launchctl and plutil succeed, so the scheduler installs. */
+  const installs: ProcessRunner = {
+    run: (): Promise<ProcessResult> =>
+      Promise.resolve({
+        stdout: "",
+        stderr: "",
+        exitCode: 0,
+        signal: null,
+        timedOut: false,
+        truncated: { stdout: false, stderr: false },
+        durationMs: 1,
+      }),
+  };
+
+  const setUp = (
+    argv: string[],
+    options: Parameters<typeof invoke>[1] = {},
+  ): Promise<Invocation> => invoke(argv, { ...options, runner: installs });
+
+  it("writes a configuration and installs the scheduler", async () => {
+    const { code, out } = await setUp(["init"], { now: at("06:00") });
+
+    expect(code).toBe(EXIT.ok);
+    expect(out).toContain("agent waker is ready");
+    expect(await configFile()).toContain("version: 1");
+    expect(
+      await readFile(
+        join(home, "Library", "LaunchAgents", `${DEFAULT_LABEL}.plist`),
+        "utf8",
+      ),
+    ).toContain("StartInterval");
+  });
+
+  it("writes a file that explains itself", async () => {
+    // The next thing a user does is open it.
+    await setUp(["init"], { now: at("06:00") });
+
+    const written = await configFile();
+
+    expect(written).toContain("# agent waker configuration.");
+    expect(written).toContain("agent-waker schedule set");
+  });
+
+  it("defaults to the machine's timezone and a sensible hour", async () => {
+    await setUp(["init"], { now: at("06:00") });
+
+    expect(await configFile()).toContain("timezone: Europe/Rome");
+    expect(await configFile()).toContain('notBefore: "07:00"');
+  });
+
+  it("takes the time and zone from the command line", async () => {
+    await setUp(["init", "--time", "06:45", "--timezone", "America/New_York"], {
+      now: at("03:00"),
+    });
+
+    const written = await configFile();
+
+    expect(written).toContain('notBefore: "06:45"');
+    expect(written).toContain("timezone: America/New_York");
+  });
+
+  it("asks when somebody is there to answer", async () => {
+    await setUp(["init"], {
+      now: at("06:00"),
+      answers: ["America/New_York", "06:30"],
+    });
+
+    const written = await configFile();
+
+    expect(written).toContain("timezone: America/New_York");
+    expect(written).toContain('notBefore: "06:30"');
+  });
+
+  it("keeps a setting the user already had", async () => {
+    await writeConfig(
+      "# mine\nversion: 1\ntimezone: Europe/Rome\nagents:\n  codex:\n    enabled: false\n",
+    );
+    await setUp(["init", "--time", "06:45"], { now: at("03:00") });
+
+    const written = await configFile();
+
+    expect(written).toContain("# mine");
+    expect(written).toContain("enabled: false");
+    expect(written).toContain('notBefore: "06:45"');
+  });
+
+  it("says when the next decision point is", async () => {
+    const { out } = await setUp(["init", "--time", "07:00"], {
+      now: at("06:00"),
+    });
+
+    expect(out).toContain("Next decision point:");
+    expect(out).toContain("today 07:00");
+  });
+
+  it("offers to catch up when the morning has already passed", async () => {
+    const { questions } = await setUp(["init", "--time", "07:00"], {
+      now: at("09:00"),
+      answers: ["Europe/Rome", "y"],
+    });
+
+    expect(questions.at(-1)).toContain("already past today's activation time");
+    expect(await stateFile()).toContain('"phase": "activated"');
+  });
+
+  it("leaves the morning alone when the answer is no", async () => {
+    await setUp(["init", "--time", "07:00"], {
+      now: at("09:00"),
+      answers: ["Europe/Rome", "n"],
+    });
+
+    await expect(stateFile()).rejects.toThrow();
+  });
+
+  it("does not catch up when nobody is there to say so", async () => {
+    // A scripted install must not start talking to providers on its own.
+    await setUp(["init", "--time", "07:00"], { now: at("09:00") });
+
+    await expect(stateFile()).rejects.toThrow();
+  });
+
+  it("rebuilds only the scheduler with --repair", async () => {
+    // The Node-upgrade case: the configuration is fine, the launcher is not.
+    await writeConfig("# untouched\nversion: 1\ntimezone: Europe/Rome\n");
+
+    const { code, out } = await setUp(["init", "--repair"]);
+
+    expect(code).toBe(EXIT.ok);
+    expect(out).toContain("Scheduler reinstalled");
+    expect(await configFile()).toContain("# untouched");
+  });
+
+  it("refuses a time that is not a time", async () => {
+    expect((await setUp(["init", "--time", "breakfast"])).code).toBe(
+      EXIT.failed,
+    );
+  });
+});
+
+describe("uninstall", () => {
+  const removes: ProcessRunner = {
+    run: (): Promise<ProcessResult> =>
+      Promise.resolve({
+        stdout: "",
+        stderr: "",
+        exitCode: 0,
+        signal: null,
+        timedOut: false,
+        truncated: { stdout: false, stderr: false },
+        durationMs: 1,
+      }),
+  };
+
+  it("says what it will remove before removing it", async () => {
+    await writeConfig();
+
+    const { out } = await invoke(["uninstall"], { runner: removes });
+
+    expect(out).toContain("This will remove:");
+    expect(out).toContain("Nothing was removed.");
+    expect(await configFile()).toContain("version: 1");
+  });
+
+  it("promises not to touch the agents themselves", async () => {
+    await writeConfig();
+
+    expect((await invoke(["uninstall"], { runner: removes })).out).toContain(
+      "Claude Code and Codex are left alone",
+    );
+  });
+
+  it("removes what it owns once confirmed", async () => {
+    await writeConfig();
+    await invoke(["tick"], { now: at("07:00") });
+    await invoke(["uninstall", "--yes"], { runner: removes });
+
+    await expect(configFile()).rejects.toThrow();
+    await expect(stateFile()).rejects.toThrow();
+  });
+
+  it("keeps the logs unless asked", async () => {
+    // They are the record of what happened, and they outlive the tool.
+    await writeConfig();
+    await invoke(["tick"], { now: at("07:00") });
+    await invoke(["uninstall", "--yes"], { runner: removes });
+
+    await expect(
+      stat(join(home, ".local", "state", "agent-waker", "logs")),
+    ).resolves.toBeDefined();
+  });
+
+  it("removes the logs when asked", async () => {
+    await writeConfig();
+    await invoke(["tick"], { now: at("07:00") });
+    await invoke(["uninstall", "--yes", "--logs"], { runner: removes });
+
+    await expect(
+      stat(join(home, ".local", "state", "agent-waker", "logs")),
+    ).rejects.toThrow();
+  });
+
+  it("takes an answer from whoever is there", async () => {
+    await writeConfig();
+    await invoke(["uninstall"], { runner: removes, answers: ["y"] });
+
+    await expect(configFile()).rejects.toThrow();
+  });
+
+  it("works when there was never a configuration", async () => {
+    const { code } = await invoke(["uninstall", "--yes"], { runner: removes });
+
+    expect(code).toBe(EXIT.ok);
   });
 });

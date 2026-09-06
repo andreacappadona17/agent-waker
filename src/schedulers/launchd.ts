@@ -14,9 +14,12 @@
  */
 
 import { chmod, mkdir, readFile, rm, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 
 import { TIMEOUTS, type ProcessRunner } from "#src/process/runner.js";
+
+/** The launcher's file name; its directory follows XDG like everything else. */
+export const LAUNCHER_NAME = "agent-waker-runner";
 
 /** Reverse-DNS, from the repository that publishes this. */
 export const DEFAULT_LABEL = "io.github.andreacappadona17.agent-waker";
@@ -57,8 +60,16 @@ export interface SchedulerDriver {
 
 export interface LaunchdOptions {
   readonly runner: ProcessRunner;
+  /** Only for the LaunchAgents directory, which macOS fixes at ~/Library. */
   readonly home: string;
   readonly uid: number;
+  /**
+   * Where to write the launcher.
+   *
+   * Passed in rather than derived, so it follows the same XDG resolution as
+   * every other path this program owns.
+   */
+  readonly launcherPath: string;
   readonly label?: string;
 }
 
@@ -160,17 +171,9 @@ exec "$NODE" "$ENTRY" tick
 export function createLaunchdScheduler(
   options: LaunchdOptions,
 ): SchedulerDriver {
-  const { runner, home, uid, label = DEFAULT_LABEL } = options;
+  const { runner, home, uid, launcherPath, label = DEFAULT_LABEL } = options;
 
   const plistPath = join(home, "Library", "LaunchAgents", `${label}.plist`);
-  const launcherPath = join(
-    home,
-    ".local",
-    "share",
-    "agent-waker",
-    "bin",
-    "agent-waker-runner",
-  );
   const domain = `gui/${String(uid)}`;
 
   const launchctl = (
@@ -192,9 +195,7 @@ export function createLaunchdScheduler(
 
   return {
     async install(config: LaunchdInstallConfig): Promise<void> {
-      await mkdir(join(home, ".local", "share", "agent-waker", "bin"), {
-        recursive: true,
-      });
+      await mkdir(dirname(launcherPath), { recursive: true });
       await writeFile(launcherPath, renderLauncher(config), "utf8");
       await chmod(launcherPath, LAUNCHER_MODE);
 

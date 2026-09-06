@@ -11,7 +11,7 @@
  * passed in rather than sniffed here.
  */
 
-import type { CommandContext } from "#src/cli/context.js";
+import { schedulerFor, type CommandContext } from "#src/cli/context.js";
 import { EXIT, type ExitCode } from "#src/cli/exit.js";
 import {
   colourise,
@@ -25,7 +25,6 @@ import {
 } from "#src/cli/format.js";
 import { effectiveAgentConfig } from "#src/config/config.js";
 import { AGENT_IDS, type AgentId } from "#src/core/agent.js";
-import { createLaunchdScheduler } from "#src/schedulers/launchd.js";
 import { cycleStartAt, type AgentPhase } from "#src/core/state.js";
 import { formatLocalTime, type Instant } from "#src/core/time.js";
 
@@ -270,11 +269,7 @@ export async function statusCommand(
   const { environment, config } = context;
   const now = environment.now();
   const loaded = await context.store.load();
-  const scheduler = await createLaunchdScheduler({
-    runner: context.runner,
-    home: environment.home,
-    uid: environment.uid,
-  }).inspect();
+  const scheduler = await schedulerFor(context).inspect();
 
   const agents = AGENT_IDS.map((agentId) => {
     const effective = effectiveAgentConfig(config, agentId);
