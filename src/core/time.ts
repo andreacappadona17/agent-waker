@@ -122,6 +122,13 @@ export function parseLocalTime(input: unknown): LocalTime {
   return { hour, minute };
 }
 
+/** Renders a local time back as `HH:MM`, canonicalised. */
+export function formatLocalTime(time: LocalTime): string {
+  const pad = (value: number): string => String(value).padStart(2, "0");
+
+  return `${pad(time.hour)}:${pad(time.minute)}`;
+}
+
 // Constructing a formatter costs far more than using one, and a tick resolves
 // the same handful of zones repeatedly.
 const formatters = new Map<string, Intl.DateTimeFormat>();

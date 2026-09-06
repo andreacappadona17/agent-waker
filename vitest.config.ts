@@ -1,6 +1,10 @@
 import { defineConfig } from "vitest/config";
 
 export default defineConfig({
+  // Resolve `#src/*` to the TypeScript sources. The published package resolves
+  // the same specifiers to `dist`, which is what the built CLI needs and what
+  // the smoke test in test/integration/bin.test.ts checks.
+  resolve: { conditions: ["development"] },
   test: {
     include: ["test/**/*.test.ts"],
     coverage: {

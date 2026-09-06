@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  formatLocalTime,
   InvalidLocalTimeError,
   InvalidTimeZoneError,
   localDateAt,
@@ -310,5 +311,21 @@ describe("resolveLocalTime", () => {
     expect(() =>
       resolveLocalTime("2026-02-30", { hour: 7, minute: 0 }, "Europe/Rome"),
     ).toThrow(/2026-02-30/);
+  });
+});
+
+describe("formatLocalTime", () => {
+  it.each([
+    [{ hour: 7, minute: 0 }, "07:00"],
+    [{ hour: 0, minute: 0 }, "00:00"],
+    [{ hour: 23, minute: 59 }, "23:59"],
+    [{ hour: 6, minute: 45 }, "06:45"],
+  ])("renders %j as %j", (time, expected) => {
+    expect(formatLocalTime(time)).toBe(expected);
+  });
+
+  it("round-trips whatever the parser accepts", () => {
+    // A single-digit hour comes back padded, which is the canonical form.
+    expect(formatLocalTime(parseLocalTime("7:00"))).toBe("07:00");
   });
 });
