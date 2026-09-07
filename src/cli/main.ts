@@ -24,7 +24,7 @@ import { runCommand } from "#src/cli/run.js";
 import { scheduleSetCommand, setEnabledCommand } from "#src/cli/schedule.js";
 import { statusCommand } from "#src/cli/status.js";
 import { tickCommand } from "#src/cli/tick.js";
-import { AGENT_IDS, isAgentId, type AgentId } from "#src/core/agent.js";
+import { asAgents, type AgentId } from "#src/core/agent.js";
 
 const USAGE = `agent waker — align coding-agent subscription windows with when you work.
 
@@ -49,6 +49,7 @@ Options:
   --timezone <zone>       With schedule set, change the zone as well
   --limit <n>             With logs, how many events to show
   --time <hh:mm>          With init, the desired activation time
+  --agents <list>         With init, which agents to manage
   --repair                With init, rebuild the scheduler only
   --logs                  With uninstall, remove the logs too
   --debug                 With logs, the raw records rather than a summary
@@ -80,7 +81,7 @@ planned and not in this build.
 const AGENT_COMMANDS = new Set(["run", "enable", "disable", "doctor", "logs"]);
 
 /** Options that consume the argument after them. */
-const VALUE_OPTIONS = new Set(["--timezone", "--limit", "--time"]);
+const VALUE_OPTIONS = new Set(["--timezone", "--limit", "--time", "--agents"]);
 
 /** Flags that are options rather than mistakes. */
 const KNOWN_FLAGS = new Set(["--repair", "--logs", "--debug", "-y", "--yes"]);
@@ -159,19 +160,6 @@ function toOption<K extends string>(
   value: string | undefined,
 ): Partial<Record<K, string>> {
   return value === undefined ? {} : ({ [key]: value } as Record<K, string>);
-}
-
-/** Narrows positionals to agents, naming anything that is not one. */
-function asAgents(positionals: readonly string[]): AgentId[] {
-  return positionals.map((value) => {
-    if (!isAgentId(value)) {
-      throw new Error(
-        `Unknown agent "${value}". This build supports ${AGENT_IDS.join(", ")}.`,
-      );
-    }
-
-    return value;
-  });
 }
 
 /**
@@ -272,6 +260,7 @@ export async function run(environment: CliEnvironment): Promise<ExitCode> {
           : await initCommand(context, {
               ...toOption("time", parsed.options.get("--time")),
               ...toOption("timezone", parsed.options.get("--timezone")),
+              ...toOption("agents", parsed.options.get("--agents")),
             });
       case "uninstall":
         return await uninstallCommand(context, {

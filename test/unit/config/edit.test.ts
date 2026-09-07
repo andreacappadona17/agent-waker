@@ -111,4 +111,28 @@ describe("editConfig", () => {
       ]),
     ).toMatch(/\n$/);
   });
+  it("creates a mapping where a key was written with no value", () => {
+    // `claude:` with nothing after it parses as a null scalar, and `setIn`
+    // refuses to descend into one.
+    const edited = editConfig(
+      "version: 1\ntimezone: Europe/Rome\nagents:\n  claude:\n",
+      [{ path: ["agents", "claude", "enabled"], value: false }],
+    );
+
+    expect(parseConfig(edited, "config.yaml").agents.claude.enabled).toBe(
+      false,
+    );
+  });
+
+  it("refuses to edit through an alias rather than dropping what it held", () => {
+    const source =
+      "version: 1\ntimezone: Europe/Rome\nagents:\n  claude: &d\n    enabled: true\n  codex: *d\n";
+
+    // Replacing the alias would silently discard whatever the anchor carried.
+    expect(() =>
+      editConfig(source, [
+        { path: ["agents", "codex", "enabled"], value: false },
+      ]),
+    ).toThrow(/alias/);
+  });
 });

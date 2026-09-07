@@ -14,6 +14,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { createRegistry } from "#src/adapters/registry.js";
+import { parseConfig } from "#src/config/config.js";
 import type { CliEnvironment } from "#src/cli/context.js";
 import { EXIT } from "#src/cli/exit.js";
 import { run } from "#src/cli/main.js";
@@ -105,7 +106,9 @@ const invoke = async (
       ? {}
       : {
           ask: (question: string, fallback: string): Promise<string> => {
-            questions.push(question);
+            // As `bin.ts` renders it, so a test can assert the default the
+            // user is actually shown.
+            questions.push(`${question} (${fallback})`);
 
             return Promise.resolve(options.answers?.shift() ?? fallback);
           },
@@ -1386,7 +1389,7 @@ describe("init", () => {
   it("asks when somebody is there to answer", async () => {
     await setUp(["init"], {
       now: at("06:00"),
-      answers: ["America/New_York", "06:30"],
+      answers: ["claude, codex", "America/New_York", "06:30"],
     });
 
     const written = await configFile();
@@ -1408,6 +1411,205 @@ describe("init", () => {
     expect(written).toContain('notBefore: "06:45"');
   });
 
+  it("says what it is and what it will not do", async () => {
+    const { out } = await setUp(["init", "--time", "07:00"], {
+      now: at("06:00"),
+    });
+
+    expect(out).toContain("Keep coding-agent subscription windows aligned");
+    expect(out).toContain("does not install agents");
+    // The thing users actually worry about (UX §6.7).
+    expect(out).toContain("agents are only contacted when one is actually due");
+  });
+
+  it("explains deferment before the first one happens", async () => {
+    const { out } = await setUp(["init", "--time", "07:00"], {
+      now: at("06:00"),
+    });
+
+    // Otherwise the first deferred morning reads as a failure (UX §2.3).
+    expect(out).toContain("still limited at 07:00");
+    expect(out).toContain("up to 5 hours");
+  });
+
+  it("offers only the agents that are ready", async () => {
+    const { questions } = await setUp(["init", "--time", "07:00"], {
+      now: at("06:00"),
+      answers: ["", "Europe/Rome"],
+      scripts: { codex: { detect: [{ installed: false, health: "unknown" }] } },
+    });
+
+    // An agent that cannot work would fail every morning until somebody
+    // noticed, so it is not selected by default (UX §6.4).
+    expect(questions[0]).toContain("Which agents");
+
+    const written = parseConfig(await configFile(), "config.yaml");
+
+    expect(written.agents.codex.enabled).toBe(false);
+    expect(written.agents.claude.enabled).toBe(true);
+  });
+
+  it("takes the agents the user names, not the ones that are ready", async () => {
+    // A user about to sign in knows something detection does not.
+    await setUp(["init", "--time", "07:00"], {
+      now: at("06:00"),
+      answers: ["codex", "Europe/Rome"],
+      scripts: { codex: { detect: [{ installed: false, health: "unknown" }] } },
+    });
+
+    const written = parseConfig(await configFile(), "config.yaml");
+
+    expect(written.agents.codex.enabled).toBe(true);
+    expect(written.agents.claude.enabled).toBe(false);
+  });
+
+  it("accepts none of them", async () => {
+    await setUp(["init", "--time", "07:00"], {
+      now: at("06:00"),
+      answers: ["none", "Europe/Rome"],
+    });
+
+    const written = parseConfig(await configFile(), "config.yaml");
+
+    expect(written.agents.claude.enabled).toBe(false);
+    expect(written.agents.codex.enabled).toBe(false);
+  });
+
+  it("asks again rather than starting over after a typo", async () => {
+    const { code, err } = await setUp(["init", "--time", "07:00"], {
+      now: at("06:00"),
+      answers: ["gemini", "codex", "Europe/Rome"],
+    });
+
+    // This is the first prompt of the onboarding; a typo should not send the
+    // user back to the beginning of it.
+    expect(err).toContain("gemini");
+    expect(code).toBe(EXIT.ok);
+    expect(await configFile()).toMatch(/codex:\n {4}enabled: true/);
+  });
+
+  it("gives up rather than spinning on an answer that never parses", async () => {
+    const { code } = await setUp(["init"], {
+      now: at("06:00"),
+      answers: ["gemini", "gemini", "gemini", "gemini"],
+    });
+
+    expect(code).toBe(EXIT.failed);
+  });
+
+  it("takes the agents from the command line, so a script need not answer", async () => {
+    // Previously `init --time X --timezone Y` asked nothing; the new prompt
+    // would have blocked a bootstrap run in a terminal.
+    const { questions } = await setUp(
+      [
+        "init",
+        "--time",
+        "07:00",
+        "--timezone",
+        "Europe/Rome",
+        "--agents",
+        "codex",
+      ],
+      { now: at("06:00"), answers: [] },
+    );
+
+    expect(questions).toEqual([]);
+
+    const written = parseConfig(await configFile(), "config.yaml");
+
+    expect(written.agents.codex.enabled).toBe(true);
+    expect(written.agents.claude.enabled).toBe(false);
+  });
+
+  it("accepts a name in the case the user typed it", async () => {
+    await setUp(["init", "--time", "07:00", "--agents", "Claude"], {
+      now: at("06:00"),
+    });
+
+    expect(
+      parseConfig(await configFile(), "config.yaml").agents.claude.enabled,
+    ).toBe(true);
+  });
+
+  it("does not reconsider a choice already made", async () => {
+    // A second `init` is a user changing a time, not asking to have an agent
+    // they disabled switched back on.
+    await writeConfig(`${CONFIG}agents:\n  codex:\n    enabled: false\n`);
+
+    const { questions } = await setUp(["init", "--time", "06:45"], {
+      now: at("03:00"),
+      answers: ["", "Europe/Rome"],
+    });
+
+    expect(questions[0]).toContain("(claude)");
+    expect(await configFile()).toContain("enabled: false");
+  });
+
+  it("never activates an agent the user just excluded", async () => {
+    // The catch-up run used the configuration loaded before init wrote the
+    // file, so an agent excluded thirty seconds earlier was contacted anyway
+    // — a real provider turn against an answer already given.
+    const { code } = await setUp(["init", "--time", "07:00"], {
+      now: at("09:00"),
+      answers: ["codex", "Europe/Rome", "y"],
+    });
+
+    expect(code).toBe(EXIT.ok);
+
+    const state = JSON.parse(await stateFile()) as {
+      agents: Record<string, { phase: string }>;
+    };
+
+    expect(state.agents.codex?.phase).toBe("activated");
+    expect(state.agents.claude?.phase).toBe("idle");
+  });
+
+  it("activates nothing when the user excluded everything", async () => {
+    await setUp(["init", "--time", "07:00", "--agents", "none"], {
+      now: at("09:00"),
+      answers: ["Europe/Rome", "y"],
+    });
+
+    const state = JSON.parse(await stateFile()) as {
+      agents: Record<string, { phase: string }>;
+    };
+
+    expect(state.agents.claude?.phase).toBe("idle");
+    expect(state.agents.codex?.phase).toBe("idle");
+  });
+
+  it("reports what it wrote, whatever shape the file is in", async () => {
+    // Flow style parses fine, and greping the text for a block-style line
+    // reported the opposite of the truth.
+    await writeConfig(
+      `${CONFIG}agents: { claude: { enabled: true }, codex: { enabled: false } }\n`,
+    );
+
+    const { out } = await setUp(["init", "--time", "07:00"], {
+      now: at("03:00"),
+    });
+
+    expect(out).toMatch(/Fake codex\s+disabled/);
+    expect(out).toMatch(/Fake claude\s+enabled/);
+  });
+
+  it("edits an agent that was written with no settings under it", async () => {
+    // `claude:` with nothing after it is a null scalar. It parses, and it used
+    // to abort init with raw YAML internals — no config, no scheduler.
+    await writeConfig(
+      `${CONFIG}agents:\n  claude:\n  codex:\n    enabled: true\n`,
+    );
+
+    const { code } = await setUp(["init", "--time", "06:45"], {
+      now: at("03:00"),
+    });
+
+    expect(code).toBe(EXIT.ok);
+    expect(
+      parseConfig(await configFile(), "config.yaml").schedule.notBefore,
+    ).toEqual({ hour: 6, minute: 45 });
+  });
+
   it("says when the next decision point is", async () => {
     const { out } = await setUp(["init", "--time", "07:00"], {
       now: at("06:00"),
@@ -1420,7 +1622,7 @@ describe("init", () => {
   it("offers to catch up when the morning has already passed", async () => {
     const { questions } = await setUp(["init", "--time", "07:00"], {
       now: at("09:00"),
-      answers: ["Europe/Rome", "y"],
+      answers: ["claude, codex", "Europe/Rome", "y"],
     });
 
     expect(questions.at(-1)).toContain("already past today's activation time");
@@ -1430,7 +1632,7 @@ describe("init", () => {
   it("leaves the morning alone when the answer is no", async () => {
     await setUp(["init", "--time", "07:00"], {
       now: at("09:00"),
-      answers: ["Europe/Rome", "n"],
+      answers: ["claude, codex", "Europe/Rome", "n"],
     });
 
     await expect(stateFile()).rejects.toThrow();

@@ -12,7 +12,7 @@ import type { AuthResult, DetectionResult } from "#src/adapters/contract.js";
 import type { CommandContext } from "#src/cli/context.js";
 import { EXIT, type ExitCode } from "#src/cli/exit.js";
 import { iconFor, supportsUnicode } from "#src/cli/format.js";
-import { AGENT_IDS } from "#src/core/agent.js";
+import { AGENT_IDS, type AgentId } from "#src/core/agent.js";
 
 const INSTALL_HINTS: Readonly<Record<string, string>> = {
   native: "native install",
@@ -47,68 +47,108 @@ function describeStatus(detection: DetectionResult): string {
   return detection.health === "ok" ? "healthy" : "found, but will not run";
 }
 
-export async function detectCommand(
+/** What one agent looks like right now. */
+export interface AgentSurvey {
+  readonly agentId: AgentId;
+  readonly displayName: string;
+  readonly detection: DetectionResult;
+  /** Absent when the executable never answered, so nothing was asked. */
+  readonly auth?: AuthResult;
+  /** Installed, runnable, and signed in with something that can be used. */
+  readonly ready: boolean;
+}
+
+/**
+ * Asks every adapter what it finds.
+ *
+ * Separate from the command because `init` needs the answers rather than the
+ * rendering: it default-selects the agents that are ready, and must not
+ * default-select the ones that are not (UX §6.4).
+ */
+export async function surveyAgents(
   context: CommandContext,
-): Promise<ExitCode> {
-  const { environment } = context;
-  const unicode = supportsUnicode(environment.env);
-  const lines: string[] = ["Supported coding agents", ""];
-  let healthy = true;
+): Promise<AgentSurvey[]> {
+  const surveys: AgentSurvey[] = [];
 
   for (const agentId of AGENT_IDS) {
     const adapter = context.registry.get(agentId);
     const adapterContext = {
       runner: context.runner,
       workDir: join(context.paths.workDir, agentId),
-      now: environment.now(),
+      now: context.environment.now(),
     };
     const detection = await adapter.detect(adapterContext);
+    // Only worth asking once the executable answers at all.
+    const auth =
+      detection.installed && detection.health === "ok"
+        ? await adapter.inspectAuth(adapterContext, detection)
+        : undefined;
 
-    lines.push(adapter.displayName);
+    surveys.push({
+      agentId,
+      displayName: adapter.displayName,
+      detection,
+      ...(auth === undefined ? {} : { auth }),
+      ready: auth?.supportsIntent === true,
+    });
+  }
+
+  return surveys;
+}
+
+/** Renders a survey the way `detect` prints it. */
+export function renderDetection(
+  surveys: readonly AgentSurvey[],
+  options: { unicode: boolean },
+): string {
+  const lines: string[] = ["Supported coding agents", ""];
+
+  for (const { displayName, detection, auth } of surveys) {
+    lines.push(displayName);
     lines.push(`  status       ${describeStatus(detection)}`);
 
-    if (!detection.installed) {
-      healthy = false;
-      lines.push("");
-      continue;
+    if (detection.installed) {
+      if (detection.version !== undefined) {
+        lines.push(`  version      ${detection.version}`);
+      }
+
+      if (detection.executable !== undefined) {
+        lines.push(`  executable   ${detection.executable}`);
+      }
+
+      if (detection.installHint !== undefined) {
+        lines.push(
+          `  install      ${INSTALL_HINTS[detection.installHint] ?? detection.installHint}`,
+        );
+      }
     }
 
-    if (detection.version !== undefined) {
-      lines.push(`  version      ${detection.version}`);
-    }
-
-    if (detection.executable !== undefined) {
-      lines.push(`  executable   ${detection.executable}`);
-    }
-
-    if (detection.installHint !== undefined) {
+    if (auth !== undefined) {
       lines.push(
-        `  install      ${INSTALL_HINTS[detection.installHint] ?? detection.installHint}`,
+        `  auth         ${iconFor(
+          auth.supportsIntent ? "activated" : "auth_required",
+          options,
+        )} ${describeAuth(auth)}`,
       );
     }
 
-    if (detection.health !== "ok") {
-      healthy = false;
-      lines.push("");
-      continue;
-    }
-
-    // Only worth asking once the executable answers at all.
-    const auth = await adapter.inspectAuth(adapterContext, detection);
-
-    if (!auth.supportsIntent) healthy = false;
-
-    const mark = iconFor(auth.supportsIntent ? "activated" : "auth_required", {
-      unicode,
-    });
-
-    lines.push(`  auth         ${mark} ${describeAuth(auth)}`);
     lines.push("");
   }
 
-  environment.write(`${lines.join("\n")}\n`);
+  return lines.join("\n");
+}
+
+export async function detectCommand(
+  context: CommandContext,
+): Promise<ExitCode> {
+  const { environment } = context;
+  const surveys = await surveyAgents(context);
+
+  environment.write(
+    `${renderDetection(surveys, { unicode: supportsUnicode(environment.env) })}\n`,
+  );
 
   // Reporting what is there is not a failure, but a script asking "can this
   // work right now" deserves an answer it can branch on.
-  return healthy ? EXIT.ok : EXIT.partial;
+  return surveys.every((survey) => survey.ready) ? EXIT.ok : EXIT.partial;
 }

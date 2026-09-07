@@ -13,14 +13,15 @@
 import { readFile } from "node:fs/promises";
 
 import { schedulerFor, type CommandContext } from "#src/cli/context.js";
-import { detectCommand } from "#src/cli/detect.js";
+import { renderDetection, surveyAgents } from "#src/cli/detect.js";
 import { EXIT, type ExitCode } from "#src/cli/exit.js";
-import { relativeTime } from "#src/cli/format.js";
-import { effectiveAgentConfig } from "#src/config/config.js";
+import { relativeTime, supportsUnicode } from "#src/cli/format.js";
+import { effectiveAgentConfig, parseConfig } from "#src/config/config.js";
 import { editConfig } from "#src/config/edit.js";
-import { AGENT_IDS } from "#src/core/agent.js";
+import { AGENT_IDS, asAgents, type AgentId } from "#src/core/agent.js";
 import { cycleStartAt } from "#src/core/state.js";
 import {
+  DAY_MS,
   formatLocalTime,
   parseLocalTime,
   parseTimeZone,
@@ -30,29 +31,49 @@ import { writeAtomic } from "#src/state/atomic.js";
 const CONFIG_MODE = 0o600;
 const DEFAULT_NOT_BEFORE = "07:00";
 
+/** Enough for a typo, few enough that a piped answer cannot spin. */
+const MAX_PROMPT_ATTEMPTS = 3;
+
+/**
+ * What the scheduler does, once it is installed.
+ *
+ * The last line is the one that matters: what users worry about is a provider
+ * being called every minute, and it is the schedule that runs that often, not
+ * the agents (UX §6.7).
+ */
+const SCHEDULER_NOTE = `The background schedule is installed.
+
+  it checks what is due every minute
+  no terminal window needs to stay open
+  agents are only contacted when one is actually due
+
+`;
+
 /** How often launchd wakes us. A minute is cheap and keeps drift invisible. */
 const TICK_INTERVAL_SECONDS = 60;
 
 /**
  * The starting configuration, with its own defaults written out.
  *
- * Generated rather than copied so the values a user chose are the ones in the
- * file, and commented so the file explains itself when they open it.
+ * Static, and edited rather than generated: a first run then takes exactly the
+ * same path as every later one, including the round-trip through `parseConfig`
+ * that `editConfig` does. The one file this program must be able to read is
+ * the one it just wrote, and that guarantee used to apply only to the second
+ * write.
  */
-function template(timezone: string, notBefore: string): string {
-  return `# agent waker configuration.
+const TEMPLATE = `# agent waker configuration.
 #
 # Edit it by hand, or with \`agent-waker schedule set\`. Every value below is
 # the default; delete a line to go back to it.
 version: 1
 
-# An IANA timezone name. The schedule is wall-clock time in this zone, so it
-# stays at ${notBefore} across daylight-saving changes.
-timezone: ${timezone}
+# An IANA timezone name. The schedule is wall-clock time in this zone, so the
+# time below does not move across daylight-saving changes.
+timezone: UTC
 
 schedule:
   # The earliest time to wake the agents. Not a guarantee of when they run.
-  notBefore: "${notBefore}"
+  notBefore: "${DEFAULT_NOT_BEFORE}"
 
 # How much to write to the event log. Raise it to debug to see no-op ticks and
 # telemetry export failures.
@@ -70,14 +91,83 @@ schedule:
 #   serviceName: agent-waker
 #   timeout: 5s
 
-# Both agents are included by default. Turn one off with
-# \`agent-waker disable codex\`.
+# Which agents are in the daily cycle. Change one with
+# \`agent-waker enable\` or \`agent-waker disable\`.
 agents:
   claude:
     enabled: true
   codex:
     enabled: true
 `;
+
+const WELCOME = `agent waker
+
+Keep coding-agent subscription windows aligned with when you work.
+
+  · finds the agent CLIs already on this computer
+  · uses the subscription login each one already has
+  · activates them from a time you choose
+  · waits when a usage window has not reset yet
+
+It does not install agents, and it does not store your credentials.
+
+`;
+
+/**
+ * What happens when an agent is still limited, said once.
+ *
+ * The retry ladder is deliberately not configurable during setup (UX §6.6).
+ * Explaining it once is what stops the first deferred morning looking like a
+ * failure.
+ */
+function deferralNote(notBefore: string, horizonMs: number): string {
+  // Read from the configuration rather than stated: a re-init of a file with
+  // its own horizon would otherwise quote the default back at the user.
+  const hours = Math.round(horizonMs / 3_600_000);
+
+  return `
+If an agent is still limited at ${notBefore}, agent waker waits for its reset
+time when the provider gives one. When it does not, it retries gradually for
+up to ${String(hours)} hours, then switches to infrequent checks.
+
+`;
+}
+
+/**
+ * Which agents to manage.
+ *
+ * Re-asks rather than aborting: this is the first prompt of the onboarding,
+ * and a typo should not send the user back to the beginning of it.
+ */
+async function chooseAgents(
+  context: CommandContext,
+  offered: readonly AgentId[],
+): Promise<ReadonlySet<AgentId>> {
+  const question = `Which agents should agent waker manage? [${AGENT_IDS.join(
+    ", ",
+  )}, or none]`;
+
+  // Bounded, so a script piping nonsense cannot spin. Interactively, three
+  // goes is more than the answer needs.
+  for (let attempt = 0; attempt < MAX_PROMPT_ATTEMPTS; attempt += 1) {
+    // "none" rather than an empty default, so the prompt never renders as `()`.
+    const answer = await askOr(context, question, offered.join(", ") || "none");
+
+    if (/^none$/i.test(answer)) return new Set();
+
+    try {
+      return new Set(
+        asAgents(answer.split(/[\s,]+/).filter((name) => name !== "")),
+      );
+    } catch (error) {
+      // Nothing has been written yet, so re-asking costs the user a line.
+      if (context.environment.ask === undefined) throw error;
+
+      context.environment.writeError(`${(error as Error).message}\n`);
+    }
+  }
+
+  throw new Error(`Giving up after ${String(MAX_PROMPT_ATTEMPTS)} attempts.`);
 }
 
 async function askOr(
@@ -128,31 +218,32 @@ export async function repairCommand(
   return EXIT.ok;
 }
 
-/** Writes the configuration file if it is not there, and returns its contents. */
-async function ensureConfig(
+/**
+ * Writes the choices into the configuration, keeping everything else.
+ *
+ * One path whether the file exists or not: a missing one starts from the
+ * template, and `editConfig` puts the values in either way.
+ */
+async function writeChoices(
   context: CommandContext,
-  timezone: string,
-  notBefore: string,
+  existing: string | undefined,
+  choices: {
+    timezone: string;
+    notBefore: string;
+    enabled: ReadonlySet<AgentId>;
+  },
 ): Promise<void> {
-  const existing = await readFile(context.paths.config, "utf8").catch(
-    () => undefined,
-  );
-
-  if (existing === undefined) {
-    await writeAtomic(context.paths.config, template(timezone, notBefore), {
-      mode: CONFIG_MODE,
-    });
-
-    return;
-  }
-
-  // Already configured: change only what was asked for, keeping the rest.
   await writeAtomic(
     context.paths.config,
-    editConfig(existing, [
-      { path: ["timezone"], value: timezone },
-      { path: ["schedule", "notBefore"], value: notBefore },
+    editConfig(existing ?? TEMPLATE, [
+      { path: ["timezone"], value: choices.timezone },
+      { path: ["schedule", "notBefore"], value: choices.notBefore },
+      ...AGENT_IDS.map((agentId) => ({
+        path: ["agents", agentId, "enabled"],
+        value: choices.enabled.has(agentId),
+      })),
     ]),
+    // Best effort, and a no-op on a first run: there is nothing to keep yet.
     { mode: CONFIG_MODE, backupPath: `${context.paths.config}.bak` },
   );
 }
@@ -160,6 +251,13 @@ async function ensureConfig(
 export interface InitOptions {
   readonly time?: string;
   readonly timezone?: string;
+  /**
+   * Which agents to manage, comma-separated, or `none`.
+   *
+   * Given so that `init` is fully specifiable from the command line: without
+   * it a bootstrap script run in a terminal would block on the prompt.
+   */
+  readonly agents?: string;
 }
 
 export async function initCommand(
@@ -168,10 +266,40 @@ export async function initCommand(
 ): Promise<ExitCode> {
   const { environment } = context;
 
-  environment.write("Setting up agent waker.\n\n");
+  environment.write(WELCOME);
+
+  const existing = await readFile(context.paths.config, "utf8").catch(
+    () => undefined,
+  );
 
   // What is actually installed, before asking anything that depends on it.
-  await detectCommand(context);
+  const surveys = await surveyAgents(context);
+
+  environment.write(
+    `${renderDetection(surveys, {
+      unicode: supportsUnicode(environment.env),
+    })}\n`,
+  );
+
+  // A second `init` is a user changing a time, not asking to have a decision
+  // they already made reconsidered: offering the healthy agents here would
+  // silently switch a disabled one back on. On a first run only the ready ones
+  // are offered — an agent that is missing, broken, or signed in with
+  // something unusable would fail every morning until somebody noticed
+  // (UX §6.4). None ready means none offered, and the user can still name one
+  // they are about to sign into.
+  const offered =
+    existing === undefined
+      ? surveys.filter((survey) => survey.ready).map((survey) => survey.agentId)
+      : AGENT_IDS.filter((agentId) => context.config.agents[agentId].enabled);
+  const enabled =
+    options.agents === undefined
+      ? await chooseAgents(context, offered)
+      : new Set(
+          /^none$/i.test(options.agents.trim())
+            ? []
+            : asAgents(options.agents.split(/[\s,]+/).filter((n) => n !== "")),
+        );
 
   const timezone = parseTimeZone(
     options.timezone ??
@@ -192,37 +320,50 @@ export async function initCommand(
     ),
   );
 
-  await ensureConfig(context, timezone, notBefore);
+  environment.write(
+    deferralNote(
+      notBefore,
+      context.config.retry.unknownReset.normalWindowHorizonMs,
+    ),
+  );
+
+  // Re-read: the prompts above have no time limit, and the file may have
+  // appeared or changed while they were open.
+  await writeChoices(
+    context,
+    await readFile(context.paths.config, "utf8").catch(() => undefined),
+    { timezone, notBefore, enabled },
+  );
   await installScheduler(context);
 
-  // Re-read, so what is reported is what the file now says rather than what
-  // was asked for.
-  const config = await readFile(context.paths.config, "utf8");
-  const now = environment.now();
-  const effective = effectiveAgentConfig(context.config, "claude");
-  const opensAt = cycleStartAt(
-    { ...effective, timezone, notBefore: parseLocalTime(notBefore) },
-    now,
+  environment.write(SCHEDULER_NOTE);
+
+  // Re-read and re-parse: `context.config` was loaded before this command
+  // wrote the file, so it still says what was true a moment ago. Reporting
+  // from it would be wrong, and handing it to a catch-up run would contact
+  // agents the user has just excluded — a real provider turn, spent against
+  // an answer they gave thirty seconds earlier.
+  const written = parseConfig(
+    await readFile(context.paths.config, "utf8"),
+    context.paths.config,
   );
-  const next =
-    now < opensAt
-      ? opensAt
-      : cycleStartAt(
-          { ...effective, timezone, notBefore: parseLocalTime(notBefore) },
-          now + 86_400_000,
-        );
+  const now = environment.now();
+  // ponytail: one agent's cycle stands for the schedule, which holds while
+  // `notBefore` is global. Read the first enabled agent's when per-agent
+  // times become configurable from here.
+  const effective = effectiveAgentConfig(written, "claude");
+  const opensAt = cycleStartAt(effective, now);
+  const next = now < opensAt ? opensAt : cycleStartAt(effective, now + DAY_MS);
 
   environment.write(
     [
       "agent waker is ready.",
       "",
       `  Desired activation   ${notBefore} ${timezone}`,
-      ...AGENT_IDS.map(
-        (agentId) =>
-          `  ${context.registry.get(agentId).displayName.padEnd(20)} ${
-            config.includes(`${agentId}:\n    enabled: false`)
-              ? "disabled"
-              : "enabled"
+      ...surveys.map(
+        ({ agentId, displayName }) =>
+          `  ${displayName.padEnd(20)} ${
+            written.agents[agentId].enabled ? "enabled" : "disabled"
           }`,
       ),
       "",
@@ -239,11 +380,15 @@ export async function initCommand(
 
   // Set up after the morning has passed: offer to catch up rather than
   // leaving the machine idle until tomorrow.
-  if (now >= opensAt) {
+  // Yes by default when somebody is there to say no (UX §6.8): the
+  // alternative is a machine that was just set up and then does nothing until
+  // tomorrow. Never when nobody is, because a scripted install must not start
+  // talking to providers on its own.
+  if (now >= opensAt && environment.ask !== undefined) {
     const answer = await askOr(
       context,
       "It is already past today's activation time. Check the agents now? [Y/n]",
-      "n",
+      "y",
     );
 
     if (/^y/i.test(answer)) {
@@ -251,7 +396,12 @@ export async function initCommand(
 
       const { tickCommand } = await import("#src/cli/tick.js");
 
-      return await tickCommand(context, { force: true });
+      // The configuration this command just wrote, not the one it started
+      // with: a disabled agent must stay untouched.
+      return await tickCommand(
+        { ...context, config: written },
+        { force: true },
+      );
     }
   }
 

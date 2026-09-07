@@ -10,7 +10,14 @@
  * program must always be able to read is the one it just wrote.
  */
 
-import { isMap, parseDocument, type Document } from "yaml";
+import {
+  isCollection,
+  isMap,
+  isScalar,
+  parseDocument,
+  YAMLMap,
+  type Document,
+} from "yaml";
 
 import { parseConfig } from "#src/config/config.js";
 
@@ -31,7 +38,41 @@ interface Annotated {
   type?: string;
 }
 
+/**
+ * Makes sure every step of the path is something a value can be set inside.
+ *
+ * `setIn` throws when an intermediate node exists but is not a collection, and
+ * two shapes that parse perfectly well hit that: `claude:` with nothing after
+ * it is a null scalar, and `codex: *anchor` is an alias. Both used to be
+ * unreachable, because only two-deep paths were ever edited.
+ *
+ * A null scalar becomes an empty map — there was nothing there to keep. An
+ * alias is refused instead: replacing it would silently drop whatever the
+ * anchor carried, and this file exists to avoid deleting the user's work.
+ */
+function ensureCollections(document: Document, path: readonly string[]): void {
+  for (let depth = 1; depth < path.length; depth += 1) {
+    const prefix = path.slice(0, depth);
+    const node: unknown = document.getIn(prefix, true);
+
+    if (node === undefined || isCollection(node)) continue;
+
+    if (isScalar(node) && node.value === null) {
+      document.setIn(prefix, new YAMLMap());
+      continue;
+    }
+
+    throw new Error(
+      `The configuration cannot be edited automatically: ${prefix.join(
+        ".",
+      )} is an alias or a plain value where a mapping is needed. Edit it by hand.`,
+    );
+  }
+}
+
 function applyEdit(document: Document, edit: ConfigEdit): void {
+  ensureCollections(document, edit.path);
+
   const previous = document.getIn([...edit.path], true) as
     Annotated | undefined;
 
