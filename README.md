@@ -6,9 +6,8 @@ Align coding-agent subscription windows with when you work.
 [![CodeQL](https://github.com/andreacappadona17/agent-waker/actions/workflows/codeql.yml/badge.svg)](https://github.com/andreacappadona17/agent-waker/actions/workflows/codeql.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-> **Not yet installable.** agent waker is early in construction: there is no
-> published package and no runnable command yet. What follows describes the
-> product being built.
+> **Not on npm yet.** The command works — it is macOS-only for now — but there
+> is no published package, so install it [from a clone](#run-it-from-a-clone).
 
 ## The problem
 
@@ -40,9 +39,9 @@ There is no daemon. A native scheduler wakes a short-lived process, which reads
 state, does only what is due, and exits. Provider CLIs are invoked only when an
 agent is actually due, not on every tick.
 
-## What it will look like
+## What it looks like
 
-The command you use day to day will be `agent-waker status`:
+The command you use day to day is `agent-waker status`:
 
 ```text
 agent waker
@@ -63,25 +62,76 @@ Codex
 
 | Agent       | Local activation | Reset detection | GitHub Actions  |
 | ----------- | ---------------- | --------------- | --------------- |
-| Claude Code | planned (v0.1)   | best effort     | planned         |
-| Codex       | planned (v0.1)   | best effort     | not supported\* |
+| Claude Code | yes              | best effort     | planned         |
+| Codex       | yes              | best effort     | not supported\* |
 
 \* Codex's official GitHub Action is API-key oriented. agent waker will not
 silently substitute API-key billing for subscription usage.
 
 ## Commands
 
-| Command                       | Purpose                                     |
-| ----------------------------- | ------------------------------------------- |
-| `agent-waker init`            | Interactive setup and scheduler install     |
-| `agent-waker status`          | What each agent is doing and what is next   |
-| `agent-waker run [agents...]` | Evaluate agents now                         |
-| `agent-waker detect`          | Discover installed agents, change nothing   |
-| `agent-waker doctor [agents]` | Diagnose install, auth and runtime problems |
-| `agent-waker logs [agent]`    | Recent events                               |
-| `agent-waker schedule set`    | Change the desired activation time          |
-| `agent-waker version`         | Print the installed version                 |
-| `agent-waker uninstall`       | Remove agent waker, leave your agents alone |
+| Command                           | Purpose                                     |
+| --------------------------------- | ------------------------------------------- |
+| `agent-waker init`                | Interactive setup and scheduler install     |
+| `agent-waker status`              | What each agent is doing and what is next   |
+| `agent-waker run [agent...]`      | Evaluate agents now, rather than waiting    |
+| `agent-waker detect`              | Discover installed agents, change nothing   |
+| `agent-waker doctor [agent...]`   | Diagnose install, auth and runtime problems |
+| `agent-waker logs [agent...]`     | Recent events; `--debug` for raw records    |
+| `agent-waker schedule set <time>` | Change the desired activation time          |
+| `agent-waker enable <agent...>`   | Include an agent in the daily cycle         |
+| `agent-waker disable <agent...>`  | Leave an agent out of it                    |
+| `agent-waker uninstall`           | Remove agent waker, leave your agents alone |
+| `agent-waker tick`                | One scheduling pass; the scheduler calls it |
+
+`--version` prints the version and `help` prints the above. Exit codes are part
+of the contract: `0` success or a tick that deferred, `1` failed, `2` bad
+configuration or command line, `3` something needs attention, `4` unsupported
+platform.
+
+## Run it from a clone
+
+macOS only for now: scheduling needs a launchd agent, and any other platform is
+refused with exit `4` rather than half-configured.
+
+```bash
+git clone https://github.com/andreacappadona17/agent-waker.git
+cd agent-waker
+corepack enable            # the pnpm version is pinned in package.json
+pnpm install
+pnpm build
+```
+
+Then either run it in place:
+
+```bash
+node dist/cli/bin.js status
+```
+
+or put `agent-waker` on your `PATH`:
+
+```bash
+pnpm link --global
+agent-waker status
+```
+
+Set it up when you are ready to have it run on its own:
+
+```bash
+agent-waker init                   # asks which agents, and from what time
+agent-waker init --agents claude --time 07:00 --timezone Europe/Rome
+```
+
+**The scheduler remembers where you ran it from.** `init` records the
+interpreter and the entry-point path in the LaunchAgent, so a clone that later
+moves, gets deleted, or is rebuilt under a different Node version leaves a
+schedule pointing at a file that is no longer there. `agent-waker doctor` says
+so, and `agent-waker init --repair` rebuilds it from wherever the code lives
+now. `agent-waker uninstall` removes the schedule, the configuration and the
+state, and touches none of your agents.
+
+Nothing here needs a provider credential of its own: agent waker uses the
+subscription login each agent CLI already has, and never reads or stores it.
 
 ## Configuration
 
