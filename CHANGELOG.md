@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.1](https://github.com/andreacappadona17/agent-waker/compare/agent-waker-v0.2.0...agent-waker-v0.2.1) (2026-09-07)
+
+
+### Bug Fixes
+
+* **cli:** report the version that was actually released ([772182a](https://github.com/andreacappadona17/agent-waker/commit/772182a363de0a355c3b72fa229832c2f32eabe3))
+
 ## [0.2.0](https://github.com/andreacappadona17/agent-waker/compare/agent-waker-v0.1.0...agent-waker-v0.2.0) (2026-09-07)
 
 
