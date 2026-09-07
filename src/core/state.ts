@@ -33,6 +33,11 @@ export const AGENT_PHASES = [
 
 export type AgentPhase = (typeof AGENT_PHASES)[number];
 
+/** Whether a string names a phase this build knows, for reading events back. */
+export function isAgentPhase(value: string): value is AgentPhase {
+  return (AGENT_PHASES as readonly string[]).includes(value);
+}
+
 /**
  * Phases that no amount of waiting will clear.
  *

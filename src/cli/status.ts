@@ -77,18 +77,27 @@ export interface RenderOptions {
   readonly unicode: boolean;
 }
 
-/** What to call each phase, in the user's terms rather than the model's. */
-export function stateLabel(agent: StatusAgentView, view: PhaseContext): string {
-  if (!agent.enabled) return "Disabled";
-
-  switch (agent.phase) {
+/**
+ * What to call a phase, in the user's terms rather than the model's.
+ *
+ * The one place a phase becomes English. `status` shows it in a table, `run`
+ * on a result line and `logs` in a history, and three spellings of
+ * "Usage window limited" would be three chances to describe the same state
+ * differently.
+ */
+export function phaseLabel(
+  phase: AgentPhase,
+  reason: string | undefined,
+  notBefore: string,
+): string {
+  switch (phase) {
     case "activated":
       return "Activated";
     case "ready":
       return "Due now";
     case "idle":
       // Naming the time answers the question the user actually has.
-      return `Waiting for ${view.notBefore}`;
+      return `Waiting for ${notBefore}`;
     case "waiting_known_reset":
       return "Usage window limited";
     case "waiting_unknown_reset":
@@ -98,9 +107,9 @@ export function stateLabel(agent: StatusAgentView, view: PhaseContext): string {
     case "transient_error":
       return "Network problem";
     case "auth_required":
-      return agent.reason === "api_billing_only"
+      return reason === "api_billing_only"
         ? "API-key authentication"
-        : agent.reason === "not_authenticated"
+        : reason === "not_authenticated"
           ? "Sign-in required"
           : "Authentication problem";
     case "unhealthy":
@@ -108,6 +117,12 @@ export function stateLabel(agent: StatusAgentView, view: PhaseContext): string {
     case "failed":
       return "Unrecognised response";
   }
+}
+
+export function stateLabel(agent: StatusAgentView, view: PhaseContext): string {
+  return agent.enabled
+    ? phaseLabel(agent.phase, agent.reason, view.notBefore)
+    : "Disabled";
 }
 
 function stateColour(agent: StatusAgentView): Colour {

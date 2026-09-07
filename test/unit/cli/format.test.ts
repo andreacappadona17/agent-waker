@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   ASCII_LABELS,
   colourise,
+  dayLabel,
   iconFor,
   relativeTime,
   supportsColour,
@@ -65,6 +66,23 @@ describe("relativeTime", () => {
     const monday = Date.parse("2026-10-26T06:00:00.000Z");
 
     expect(relativeTime(monday, sunday, zone)).toBe("tomorrow 07:00");
+  });
+});
+
+describe("dayLabel", () => {
+  it("names the day without a clock, so a caller can add its own", () => {
+    expect(dayLabel(at("09:30"), now, zone)).toBe("today");
+    expect(dayLabel(at("07:00", "08"), now, zone)).toBe("tomorrow");
+    expect(dayLabel(at("07:00", "06"), now, zone)).toBe("yesterday");
+  });
+});
+
+describe("relativeTime, given a timestamp that did not parse", () => {
+  it("says so rather than throwing", () => {
+    // `logs` reads timestamps out of a file, and `Intl` throws a RangeError on
+    // an unparseable one rather than returning anything printable.
+    expect(() => relativeTime(Number.NaN, now, zone)).not.toThrow();
+    expect(relativeTime(Number.NaN, now, zone)).toBe("—");
   });
 });
 

@@ -140,30 +140,41 @@ function dayDistance(from: Instant, to: Instant, timeZone: string): number {
 }
 
 /**
- * Renders an instant the way somebody would say it out loud.
+ * Which day an instant falls on, the way somebody would say it out loud.
  *
  * Relative while that is unambiguous, then a weekday for the surrounding week
  * — which is what a weekly limit needs — and a plain date beyond that.
+ * Separate from the clock because `logs` says the same day and its own
+ * seconds, and reading the day back off a formatted string is not a seam.
  */
+export function dayLabel(
+  instant: Instant,
+  now: Instant,
+  timeZone: string,
+): string {
+  const days = dayDistance(now, instant, timeZone);
+
+  if (days === 0) return "today";
+  if (days === 1) return "tomorrow";
+  if (days === -1) return "yesterday";
+
+  // A weekday only says which day while there is one of each to choose from.
+  if (Math.abs(days) < 7) return weekdayAt(instant, timeZone);
+
+  return localDateAt(instant, timeZone);
+}
+
+/** Renders an instant the way somebody would say it out loud. */
 export function relativeTime(
   instant: Instant | undefined,
   now: Instant,
   timeZone: string,
 ): string {
-  if (instant === undefined) return "—";
+  // NaN as well as absent: a timestamp read back out of the log may not parse,
+  // and `Intl` throws on one rather than returning anything printable.
+  if (instant === undefined || Number.isNaN(instant)) return "—";
 
-  const clock = clockAt(instant, timeZone);
-  const days = dayDistance(now, instant, timeZone);
-
-  if (days === 0) return `today ${clock}`;
-  if (days === 1) return `tomorrow ${clock}`;
-  if (days === -1) return `yesterday ${clock}`;
-
-  // A weekday only says which day while there is one of each to choose from.
-  if (days > 1 && days < 7) return `${weekdayAt(instant, timeZone)} ${clock}`;
-  if (days < -1 && days > -7) return `${weekdayAt(instant, timeZone)} ${clock}`;
-
-  return `${localDateAt(instant, timeZone)} ${clock}`;
+  return `${dayLabel(instant, now, timeZone)} ${clockAt(instant, timeZone)}`;
 }
 
 // Colour is invisible but not free: it makes a cell wider than it looks.

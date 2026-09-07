@@ -36,7 +36,7 @@ Commands:
   detect                  What is installed, and whether it can be used
   tick                    Run one scheduling pass; the scheduler calls this
   run [agent...]          Evaluate now rather than waiting for the schedule
-  logs                    Recent events
+  logs [agent...]         Recent events
   schedule set <time>     Change the desired activation time
   enable <agent...>       Include an agent in the daily cycle
   disable <agent...>      Leave an agent out of it
@@ -50,6 +50,7 @@ Options:
   --time <hh:mm>          With init, the desired activation time
   --repair                With init, rebuild the scheduler only
   --logs                  With uninstall, remove the logs too
+  --debug                 With logs, the raw records rather than a summary
   -y, --yes               Do not ask for confirmation
   -h, --help              Show this message
   -v, --version           Show the version
@@ -63,13 +64,13 @@ Exit codes:
 `;
 
 /** Commands whose positional arguments name agents. */
-const AGENT_COMMANDS = new Set(["run", "enable", "disable", "doctor"]);
+const AGENT_COMMANDS = new Set(["run", "enable", "disable", "doctor", "logs"]);
 
 /** Options that consume the argument after them. */
 const VALUE_OPTIONS = new Set(["--timezone", "--limit", "--time"]);
 
 /** Flags that are options rather than mistakes. */
-const KNOWN_FLAGS = new Set(["--repair", "--logs", "-y", "--yes"]);
+const KNOWN_FLAGS = new Set(["--repair", "--logs", "--debug", "-y", "--yes"]);
 
 const COMMANDS = new Set([
   "status",
@@ -270,7 +271,11 @@ export async function run(environment: CliEnvironment): Promise<ExitCode> {
           return EXIT.usage;
         }
 
-        return await logsCommand(context, limit);
+        return await logsCommand(context, {
+          limit,
+          agents,
+          verbose: parsed.flags.has("--debug"),
+        });
       }
       case "schedule": {
         const [subcommand, time] = parsed.positionals;

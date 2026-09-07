@@ -536,7 +536,7 @@ describe("telemetry", () => {
     );
     await invoke(["tick"], { now: at("07:00") });
 
-    const { out } = await invoke(["logs"]);
+    const { out } = await invoke(["logs", "--debug"]);
 
     expect(out).toContain("telemetry.export_failed");
   });
@@ -731,22 +731,121 @@ describe("logs", () => {
     expect(out).toContain("No events yet");
   });
 
-  it("shows what happened", async () => {
+  it("shows what happened, in the words the other commands use", async () => {
     await writeConfig();
     await invoke(["tick"], { now: at("07:00") });
 
-    const { out } = await invoke(["logs"]);
+    const { out } = await invoke(["logs"], { now: at("07:05") });
 
-    expect(out).toContain("scheduler.tick");
+    expect(out).toContain("Recent agent waker events");
+    expect(out).toContain("Activated");
+    expect(out).toContain("today 07:00:00");
+    // The raw event name is the debug view's job.
+    expect(out).not.toContain("agent.activated");
+  });
+
+  it("names a limit the way status does", async () => {
+    await writeConfig();
+    await invoke(["tick"], {
+      now: at("07:00"),
+      scripts: {
+        codex: {
+          probe: [
+            {
+              kind: "blocked",
+              reason: "rolling_window",
+              constraints: [
+                {
+                  type: "rolling_window",
+                  resetAt: at("08:23"),
+                  confidence: "high",
+                },
+              ],
+            },
+          ],
+        },
+      },
+    });
+
+    const { out } = await invoke(["logs"], { now: at("07:05") });
+
+    expect(out).toContain("Usage window limited");
+    expect(out).toContain("next check today 08:24");
+  });
+
+  it("can be pointed at one agent", async () => {
+    await writeConfig();
+    await invoke(["tick"], { now: at("07:00") });
+
+    const { out } = await invoke(["logs", "codex"], { now: at("07:05") });
+
+    expect(out).toContain("codex");
+    expect(out).not.toContain("claude");
+  });
+
+  it("refuses an agent it does not have", async () => {
+    await writeConfig();
+
+    const { code, err } = await invoke(["logs", "gemini"]);
+
+    // Silently showing everything would be the worst of both.
+    expect(code).toBe(EXIT.usage);
+    expect(err).toContain("gemini");
+  });
+
+  it("says so when an agent has no events of its own", async () => {
+    await writeConfig();
+    await invoke(["run", "claude"], { now: at("07:00") });
+
+    const { out } = await invoke(["logs", "codex"]);
+
+    expect(out).toContain("No events yet for codex");
+  });
+
+  it("keeps no-op ticks out of the default view", async () => {
+    await writeConfig(`${CONFIG}logging:\n  level: debug\n`);
+    await invoke(["tick"], { now: at("05:00") });
+
+    const plain = await invoke(["logs"]);
+    const debug = await invoke(["logs", "--debug"]);
+
+    // Written, so `--debug` can show it; not shown by default, because a
+    // minute-level scheduler would bury everything else (UX §14).
+    expect(plain.out).toContain("No events yet");
+    expect(debug.out).toContain("scheduler.tick");
+  });
+
+  it("explains a recovered state file in the default view", async () => {
+    await writeConfig();
+    await invoke(["tick"], { now: at("07:00") });
+    await invoke(["tick"], { now: at("07:30") });
+    await writeFile(
+      join(home, ".local", "state", "agent-waker", "state.json"),
+      "broken",
+    );
+    await invoke(["tick"], { now: at("09:00") });
+
+    const { out } = await invoke(["logs"], { now: at("09:05") });
+
+    expect(out).toContain("State recovered from the backup copy");
+  });
+
+  it("shows the raw record under --debug", async () => {
+    await writeConfig();
+    await invoke(["tick"], { now: at("07:00") });
+
+    const { out } = await invoke(["logs", "--debug"], { now: at("07:05") });
+
     expect(out).toContain("agent.activated");
-    expect(out).toContain("07:00");
+    expect(out).toContain("INFO");
+    expect(out).toContain("durationMs=");
   });
 
   it("takes a limit", async () => {
     await writeConfig();
     await invoke(["tick"], { now: at("07:00") });
 
-    const { out } = await invoke(["logs", "--limit", "1"]);
+    const { out } = await invoke(["logs", "--limit", "1", "--debug"]);
 
     expect(out.trim().split("\n")).toHaveLength(1);
   });
@@ -774,10 +873,69 @@ describe("logs", () => {
       },
     });
 
-    const { out } = await invoke(["logs"]);
+    const { out } = await invoke(["logs", "--debug"]);
 
     expect(out).toContain("cleared your screen");
     expect(out).not.toMatch(ANSI);
+  });
+
+  it("neutralises a hand-edited log file", async () => {
+    // The default view no longer runs every field through the renderer, so an
+    // event name it does not recognise is printed as-is. A log file is a file:
+    // anything could be in it, and it is on its way to a terminal.
+    await writeConfig();
+    await mkdir(join(home, ".local", "state", "agent-waker", "logs"), {
+      recursive: true,
+    });
+    await writeFile(
+      join(
+        home,
+        ".local",
+        "state",
+        "agent-waker",
+        "logs",
+        "events-2026-09-07.jsonl",
+      ),
+      `${JSON.stringify({
+        timestamp: "2026-09-07T05:00:00.000Z",
+        level: "info",
+        event: "\u001b[2Jmade.up.event",
+        runtime: "local",
+        fields: { reason: "\u001b[31mred", nextAttemptAt: "not a date" },
+      })}\n`,
+    );
+
+    const { out } = await invoke(["logs"], { now: at("07:05") });
+
+    expect(out).toContain("made.up.event");
+    expect(out).not.toMatch(ANSI);
+  });
+
+  it("accepts a limit without mistaking it for an agent", async () => {
+    // `logs` now takes agent positionals, so the option's value must not be
+    // read as one.
+    await writeConfig();
+    await invoke(["tick"], { now: at("07:00") });
+
+    expect((await invoke(["logs", "--limit", "5"])).code).toBe(EXIT.ok);
+    expect((await invoke(["logs", "claude", "codex"])).code).toBe(EXIT.ok);
+  });
+
+  it("keeps provider text out of the default view entirely", async () => {
+    await writeConfig();
+    await invoke(["tick"], {
+      now: at("07:00"),
+      scripts: {
+        codex: {
+          probe: [{ kind: "unknown", detail: "something the provider said" }],
+        },
+      },
+    });
+
+    const { out } = await invoke(["logs"]);
+
+    expect(out).not.toContain("something the provider said");
+    expect(out).toContain("Unrecognised response");
   });
 });
 
