@@ -215,7 +215,9 @@ describe("parseActivation", () => {
 });
 
 describe("createCodexAdapter", () => {
-  const recording = (): { runner: ProcessRunner; specs: ProcessSpec[] } => {
+  const recording = (
+    answers: Record<string, ProcessResult> = {},
+  ): { runner: ProcessRunner; specs: ProcessSpec[] } => {
     const specs: ProcessSpec[] = [];
 
     return {
@@ -223,7 +225,8 @@ describe("createCodexAdapter", () => {
       runner: {
         run(spec: ProcessSpec): Promise<ProcessResult> {
           specs.push(spec);
-          return Promise.resolve(ran());
+
+          return Promise.resolve(answers[spec.args.join(" ")] ?? ran());
         },
       },
     };
@@ -294,5 +297,38 @@ describe("createCodexAdapter", () => {
 
     expect(adapter.capabilities.probeMode).toBe("activation_is_probe");
     expect(Object.hasOwn(adapter, "probe")).toBe(false);
+  });
+
+  it("checks the exec flags without spending a turn", async () => {
+    const { runner, specs } = recording({
+      "exec --help": ran({ stdout: await fixture("exec-help.txt") }),
+    });
+
+    const missing = await createCodexAdapter().smokeTest(context(runner), {
+      installed: true,
+      executable: "/usr/local/bin/codex",
+      health: "ok",
+    });
+
+    expect(specs[0]?.args).toEqual(["exec", "--help"]);
+    expect(missing).toEqual([]);
+  });
+
+  it("names a flag the provider renamed rather than removed", async () => {
+    // The rename this check exists for: `--sandbox` is a substring of
+    // `--sandbox-mode`, so a substring search would call it present.
+    const help = (await fixture("exec-help.txt")).replaceAll(
+      "--sandbox",
+      "--sandbox-mode",
+    );
+    const { runner } = recording({ "exec --help": ran({ stdout: help }) });
+
+    expect(
+      await createCodexAdapter().smokeTest(context(runner), {
+        installed: true,
+        executable: "/usr/local/bin/codex",
+        health: "ok",
+      }),
+    ).toEqual(["--sandbox"]);
   });
 });

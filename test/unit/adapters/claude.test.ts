@@ -277,6 +277,58 @@ describe("createClaudeAdapter", () => {
     now: 0,
   });
 
+  it("checks the activation flags without spending a turn", async () => {
+    const { runner, specs } = recording({
+      "--help": ran({ stdout: await fixture("help.txt") }),
+    });
+
+    // Captured from the real CLI: a synthetic list of flags would pass a
+    // matcher that cannot fail, which is how the substring version shipped.
+    const missing = await createClaudeAdapter().smokeTest(context(runner), {
+      installed: true,
+      executable: "/usr/local/bin/claude",
+      health: "ok",
+    });
+
+    expect(specs[0]?.args).toEqual(["--help"]);
+    expect(missing).toEqual([]);
+  });
+
+  it("names a flag the provider stopped offering", async () => {
+    // `-p` occurs dozens of times inside other words — `--print`,
+    // `--permission-mode`, `--plugin-dir` — so a substring search could never
+    // report it missing.
+    // Every standalone `-p`, as if the short alias had been dropped in favour
+    // of `--print` alone.
+    const help = (await fixture("help.txt")).replaceAll(
+      /(^|[^\w-])-p(?![\w-])/g,
+      "$1--print",
+    );
+    const { runner } = recording({ "--help": ran({ stdout: help }) });
+
+    expect(
+      await createClaudeAdapter().smokeTest(context(runner), {
+        installed: true,
+        executable: "/usr/local/bin/claude",
+        health: "ok",
+      }),
+    ).toEqual(["-p"]);
+  });
+
+  it("treats a help command that would not run as offering nothing", async () => {
+    const { runner } = recording({
+      "--help": ran({ exitCode: 2, stdout: "" }),
+    });
+
+    expect(
+      await createClaudeAdapter().smokeTest(context(runner), {
+        installed: true,
+        executable: "/usr/local/bin/claude",
+        health: "ok",
+      }),
+    ).toEqual(["-p", "--output-format", "--restricted", "--strict-mcp-config"]);
+  });
+
   it("asks for authentication status without consuming anything", async () => {
     const { runner, specs } = recording();
     const adapter = createClaudeAdapter();

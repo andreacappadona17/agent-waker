@@ -1,4 +1,5 @@
 import {
+  chmod,
   mkdir,
   mkdtemp,
   readFile,
@@ -83,6 +84,7 @@ const invoke = async (
     /** Answers for the prompts, in order; absent means nobody is there. */
     answers?: string[];
     runner?: ProcessRunner;
+    platform?: string;
   } = {},
 ): Promise<Invocation> => {
   let out = "";
@@ -92,7 +94,7 @@ const invoke = async (
     argv,
     env: { HOME: home, LANG: "en_GB.UTF-8", ...options.env },
     home,
-    platform: "darwin",
+    platform: options.platform ?? "darwin",
     uid: 501,
     isTty: options.isTty ?? false,
     execPath: "/opt/node/bin/node",
@@ -721,6 +723,38 @@ describe("detect", () => {
   });
 });
 
+describe("an unsupported platform", () => {
+  it("refuses rather than half working", async () => {
+    await writeConfig();
+
+    const { code, err } = await invoke(["status"], { platform: "linux" });
+
+    // Exit 4 has been in the contract and the help text since the router was
+    // written, and nothing returned it until now.
+    expect(code).toBe(EXIT.unsupported);
+    expect(err).toContain("macOS");
+    expect(err).toContain("Linux");
+  });
+
+  it("refuses before it touches the configuration", async () => {
+    // No config written: the answer is about the machine, not the setup.
+    const { code, err } = await invoke(["init"], { platform: "win32" });
+
+    expect(code).toBe(EXIT.unsupported);
+    expect(err).toContain("win32");
+    await expect(configFile()).rejects.toThrow();
+  });
+
+  it("still answers a question anybody can ask", async () => {
+    const help = await invoke(["help"], { platform: "linux" });
+    const version = await invoke(["--version"], { platform: "linux" });
+
+    expect(help.code).toBe(EXIT.ok);
+    expect(help.out).toContain("Usage:");
+    expect(version.code).toBe(EXIT.ok);
+  });
+});
+
 describe("logs", () => {
   it("says so when there is nothing yet", async () => {
     await writeConfig();
@@ -1118,6 +1152,54 @@ describe("doctor", () => {
     });
 
     expect(out).toContain("2 things need attention");
+  });
+
+  it("reports that state can be written", async () => {
+    await writeConfig();
+
+    expect((await invoke(["doctor"])).out).toContain("state can be written");
+  });
+
+  it("says so when state cannot be written", async () => {
+    await writeConfig();
+    // A tick that cannot save has spent a provider turn and lost the record.
+    const stateDir = join(home, ".local", "state", "agent-waker");
+
+    await mkdir(stateDir, { recursive: true });
+    await chmod(stateDir, 0o500);
+
+    try {
+      const { out, code } = await invoke(["doctor"]);
+
+      expect(out).toContain("state cannot be written");
+      expect(out).toContain("activated more than once a day");
+      expect(code).toBe(EXIT.partial);
+    } finally {
+      // Otherwise the temporary home cannot be removed.
+      await chmod(stateDir, 0o700);
+    }
+  });
+
+  it("does not create the directory it is asking about", async () => {
+    await writeConfig();
+
+    await invoke(["doctor"]);
+
+    // A diagnostic that creates what it inspects is reporting on a machine it
+    // just changed — and recursive mkdir would make ~/.local on the way.
+    await expect(stat(join(home, ".local"))).rejects.toThrow();
+  });
+
+  it("names a flag the provider no longer offers", async () => {
+    await writeConfig();
+
+    const { out, code } = await invoke(["doctor", "codex"], {
+      scripts: { codex: { smoke: ["--ephemeral"] } },
+    });
+
+    expect(out).toContain("the activation command may have changed");
+    expect(out).toContain("not offered: --ephemeral");
+    expect(code).toBe(EXIT.partial);
   });
 
   it("names a failed check by the problem, not by the hope", async () => {

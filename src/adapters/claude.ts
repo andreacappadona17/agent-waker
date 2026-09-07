@@ -22,7 +22,7 @@ import type {
   DetectionResult,
 } from "#src/adapters/contract.js";
 import type { AgentObservation } from "#src/core/observation.js";
-import { toDetection } from "#src/adapters/detection.js";
+import { missingFlags, toDetection } from "#src/adapters/detection.js";
 import { discoverExecutable } from "#src/process/discovery.js";
 import { TIMEOUTS, type ProcessResult } from "#src/process/runner.js";
 
@@ -30,6 +30,23 @@ const EXECUTABLE = "claude";
 
 /** Trivial, tool-free, and cheap: the window is what is wanted, not an answer. */
 export const ACTIVATION_PROMPT = "Respond with OK only.";
+
+/**
+ * The activation, as a command line.
+ *
+ * The smoke test reads its flags back off this array, so there is no second
+ * list of them to drift out of step with what is actually passed.
+ */
+const ACTIVATION_ARGS = [
+  "-p",
+  ACTIVATION_PROMPT,
+  "--output-format",
+  "json",
+  // No shell or code tools, and no MCP servers from the user's own
+  // configuration: the activation must not be able to touch anything.
+  "--restricted",
+  "--strict-mcp-config",
+] as const;
 
 /** How much of a message is worth keeping for the log. */
 const MAX_DETAIL_LENGTH = 300;
@@ -219,6 +236,20 @@ export function createClaudeAdapter(): AgentAdapter {
       );
     },
 
+    async smokeTest(context, detection): Promise<readonly string[]> {
+      // A `--help` that will not run offers nothing, so every flag comes back
+      // missing — which is the answer the check wanted anyway, without a
+      // branch for it.
+      const help = await context.runner.run({
+        executable: detection.executable ?? EXECUTABLE,
+        args: ["--help"],
+        cwd: context.workDir,
+        timeoutMs: TIMEOUTS.detect,
+      });
+
+      return missingFlags(help.stdout + help.stderr, ACTIVATION_ARGS);
+    },
+
     async activate(
       context: AdapterContext,
       detection: DetectionResult,
@@ -226,16 +257,7 @@ export function createClaudeAdapter(): AgentAdapter {
       return parseActivation(
         await context.runner.run({
           executable: detection.executable ?? EXECUTABLE,
-          args: [
-            "-p",
-            ACTIVATION_PROMPT,
-            "--output-format",
-            "json",
-            // No shell or code tools, and no MCP servers from the user's own
-            // configuration: the activation must not be able to touch anything.
-            "--restricted",
-            "--strict-mcp-config",
-          ],
+          args: ACTIVATION_ARGS,
           cwd: context.workDir,
           timeoutMs: TIMEOUTS.activate,
         }),

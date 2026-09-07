@@ -1,4 +1,4 @@
-/** Shared between adapters: what discovery found, as the contract describes it. */
+/** Shared between adapters: reading what a provider says about itself. */
 
 import type { DetectionResult } from "#src/adapters/contract.js";
 import type { ExecutableDiscovery } from "#src/process/discovery.js";
@@ -29,4 +29,32 @@ export function toDetection(found: ExecutableDiscovery): DetectionResult {
     installHint: found.selected.installHint,
     ...(version === undefined ? {} : { version }),
   };
+}
+
+/**
+ * Which of an activation's flags a provider no longer offers.
+ *
+ * Tokenised rather than a substring search, which is the difference between a
+ * check that works and one that cannot fail. `-p` occurs forty-four times
+ * inside other words in Claude's help, and `--sandbox` is a substring of
+ * `--sandbox-mode` — so `includes` would pass a provider that had dropped the
+ * flag and a provider that had renamed it, which are the two cases this
+ * exists for.
+ *
+ * Takes the activation's whole argument list, so there is no second list of
+ * flags to drift out of step with what is actually passed.
+ */
+export function missingFlags(
+  help: string,
+  activationArgs: readonly string[],
+): readonly string[] {
+  // Word characters and hyphens, so `-p, --print` yields both flags and
+  // `--output-format=json` yields the flag without its value.
+  const offered = new Set(help.split(/[^\w-]+/));
+
+  // ponytail: an option *value* starting with a dash would be read as a flag.
+  // None does. Mark the values if that changes.
+  return activationArgs.filter(
+    (argument) => argument.startsWith("-") && !offered.has(argument),
+  );
 }

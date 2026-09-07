@@ -18,6 +18,7 @@ import { initCommand, repairCommand } from "#src/cli/init.js";
 import { uninstallCommand } from "#src/cli/uninstall.js";
 import { doctorCommand } from "#src/cli/doctor.js";
 import { EXIT, type ExitCode } from "#src/cli/exit.js";
+import { platformName } from "#src/cli/format.js";
 import { logsCommand } from "#src/cli/logs.js";
 import { runCommand } from "#src/cli/run.js";
 import { scheduleSetCommand, setEnabledCommand } from "#src/cli/schedule.js";
@@ -61,6 +62,18 @@ Exit codes:
   2  the configuration or the command line is wrong
   3  something needs attention
   4  unsupported on this platform
+`;
+
+/**
+ * Why there is nothing to do here.
+ *
+ * ponytail: one supported platform, so one message. It becomes a lookup
+ * against the available scheduler drivers when systemd lands.
+ */
+const unsupportedPlatform = (platform: string): string =>
+  `agent waker runs on macOS, and this is ${platformName(platform)}.
+Scheduling needs a launchd agent, which only macOS has. Linux support is
+planned and not in this build.
 `;
 
 /** Commands whose positional arguments name agents. */
@@ -194,6 +207,14 @@ export async function run(environment: CliEnvironment): Promise<ExitCode> {
     environment.write(USAGE);
 
     return EXIT.ok;
+  }
+
+  // Before anything reads a file. `help` and `--version` are answered above,
+  // because a user asking what this is deserves an answer wherever they are.
+  if (environment.platform !== "darwin") {
+    environment.writeError(unsupportedPlatform(environment.platform));
+
+    return EXIT.unsupported;
   }
 
   if (!COMMANDS.has(parsed.command)) {

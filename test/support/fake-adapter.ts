@@ -30,6 +30,8 @@ export interface FakeScript {
    * is actually used.
    */
   readonly exec?: readonly string[];
+  /** Flags the provider has stopped offering; absent means a healthy one. */
+  readonly smoke?: readonly string[];
 }
 
 export interface FakeAdapter extends AgentAdapter {
@@ -114,6 +116,9 @@ export function createFakeAdapter(
             );
           },
         }),
+
+    smokeTest: (): Promise<readonly string[]> =>
+      Promise.resolve(script.smoke ?? []),
 
     activate(): Promise<AgentObservation> {
       const index = calls.activate++;

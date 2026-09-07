@@ -105,6 +105,23 @@ export interface AgentAdapter {
     auth: AuthResult,
   ): Promise<AgentObservation>;
 
+  /**
+   * A quota-free check that the invocation this build makes still exists.
+   *
+   * Not the activation: that spends a turn, which a diagnostic must not. This
+   * asks the provider to describe its own non-interactive command and reports
+   * which of the activation's flags it no longer offers — a fact, not a
+   * verdict, in keeping with the rest of this contract. A provider that
+   * renames one otherwise fails at seven in the morning with nothing to point
+   * at (ARCHITECTURE §31).
+   *
+   * @returns the flags the provider did not offer; empty means all of them.
+   */
+  smokeTest(
+    context: AdapterContext,
+    detection: DetectionResult,
+  ): Promise<readonly string[]>;
+
   /** The minimal interaction that establishes the session. */
   activate(
     context: AdapterContext,

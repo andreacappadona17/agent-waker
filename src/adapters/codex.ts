@@ -20,7 +20,7 @@ import type {
   AuthResult,
   DetectionResult,
 } from "#src/adapters/contract.js";
-import { toDetection } from "#src/adapters/detection.js";
+import { missingFlags, toDetection } from "#src/adapters/detection.js";
 import type { AgentObservation } from "#src/core/observation.js";
 import { discoverExecutable } from "#src/process/discovery.js";
 import { TIMEOUTS, type ProcessResult } from "#src/process/runner.js";
@@ -28,6 +28,24 @@ import { TIMEOUTS, type ProcessResult } from "#src/process/runner.js";
 const EXECUTABLE = "codex";
 
 export const ACTIVATION_PROMPT = "Respond with OK only.";
+
+/**
+ * The activation, as a command line.
+ *
+ * The smoke test reads its flags back off this array, so there is no second
+ * list of them to drift out of step with what is actually passed.
+ */
+const ACTIVATION_ARGS = [
+  "exec",
+  ACTIVATION_PROMPT,
+  "--json",
+  // The working directory is a scratch directory, not a repository.
+  "--skip-git-repo-check",
+  "--sandbox",
+  "read-only",
+  // A session that leaves nothing behind, which is all a warmup needs.
+  "--ephemeral",
+] as const;
 
 const MAX_DETAIL_LENGTH = 300;
 
@@ -205,6 +223,20 @@ export function createCodexAdapter(): AgentAdapter {
       );
     },
 
+    async smokeTest(context, detection): Promise<readonly string[]> {
+      // A `--help` that will not run offers nothing, so every flag comes back
+      // missing — which is the answer the check wanted anyway, without a
+      // branch for it.
+      const help = await context.runner.run({
+        executable: detection.executable ?? EXECUTABLE,
+        args: ["exec", "--help"],
+        cwd: context.workDir,
+        timeoutMs: TIMEOUTS.detect,
+      });
+
+      return missingFlags(help.stdout + help.stderr, ACTIVATION_ARGS);
+    },
+
     async activate(
       context: AdapterContext,
       detection: DetectionResult,
@@ -212,17 +244,7 @@ export function createCodexAdapter(): AgentAdapter {
       return parseActivation(
         await context.runner.run({
           executable: detection.executable ?? EXECUTABLE,
-          args: [
-            "exec",
-            ACTIVATION_PROMPT,
-            "--json",
-            // The working directory is a scratch directory, not a repository.
-            "--skip-git-repo-check",
-            "--sandbox",
-            "read-only",
-            // A session that leaves nothing behind, which is all a warmup needs.
-            "--ephemeral",
-          ],
+          args: ACTIVATION_ARGS,
           cwd: context.workDir,
           // Observed: with stdin open, `codex exec` reports that it is reading
           // additional input and waits. In a scheduled run that is a hung tick.

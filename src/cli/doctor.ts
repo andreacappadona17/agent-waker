@@ -12,6 +12,8 @@
  * method" is advice; a command that bypasses a security control is not.
  */
 
+import { constants } from "node:fs";
+import { access } from "node:fs/promises";
 import { join } from "node:path";
 
 import { schedulerFor, type CommandContext } from "#src/cli/context.js";
@@ -42,6 +44,41 @@ const MARK: Readonly<
   warn: "auth_required",
   fail: "unhealthy",
 };
+
+/**
+ * Whether state can be written back.
+ *
+ * `access` and nothing else — no probe file and no `mkdir`. A diagnostic that
+ * creates the directory it is asking about would be reporting on a machine it
+ * had just changed, and would create `~/.local` on the way.
+ */
+async function writableCheck(directory: string): Promise<Check> {
+  const denied = await access(directory, constants.W_OK | constants.X_OK).then(
+    () => undefined,
+    (error: unknown) => (error as NodeJS.ErrnoException).code ?? "EACCES",
+  );
+
+  // Absent is a first run, not a fault: the store creates the directory, with
+  // the mode it wants, the first time it saves.
+  return denied === undefined || denied === "ENOENT"
+    ? {
+        name: "state can be written",
+        outcome: "pass",
+        evidence: directory,
+      }
+    : {
+        name: "state cannot be written",
+        outcome: "fail",
+        evidence: `${denied}: ${directory}`,
+        advice: [
+          "agent waker cannot record what it has done, so an agent may be",
+          "activated more than once a day, or not at all. Check the ownership",
+          "and permissions of:",
+          "",
+          `  ${directory}`,
+        ],
+      };
+}
 
 /** The scheduler's own health: configuration, state, and the LaunchAgent. */
 async function schedulerSection(context: CommandContext): Promise<Section> {
@@ -77,6 +114,11 @@ async function schedulerSection(context: CommandContext): Promise<Section> {
           evidence: context.paths.stateDir,
         },
   );
+
+  // Readable is not enough: a tick that cannot save has spent a provider turn
+  // and lost the record of spending it, which is the one failure that costs
+  // the user something real.
+  checks.push(await writableCheck(context.paths.stateDir));
 
   const scheduler = await schedulerFor(context).inspect();
 
@@ -244,6 +286,28 @@ async function agentSection(
     outcome: "pass",
     ...(detection.version === undefined ? {} : { evidence: detection.version }),
   });
+
+  // Before authentication, because a renamed flag breaks a signed-in agent
+  // just as thoroughly, and this costs no quota to find out.
+  const missing = await adapter.smokeTest(adapterContext, detection);
+
+  checks.push(
+    missing.length === 0
+      ? { name: "the activation command is still accepted", outcome: "pass" }
+      : {
+          name: "the activation command may have changed",
+          outcome: "warn",
+          evidence: `not offered: ${missing.join(", ")}`,
+          advice: [
+            `${adapter.displayName} does not offer everything this release of`,
+            "agent waker asks it for, so activation may fail even though the",
+            "agent is installed and signed in. That usually means the provider",
+            "changed its command line in a newer version.",
+            "",
+            "Check for an agent waker update, and report it if there is none.",
+          ],
+        },
+  );
 
   const auth = await adapter.inspectAuth(adapterContext, detection);
 
