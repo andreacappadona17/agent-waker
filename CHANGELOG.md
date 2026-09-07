@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.0](https://github.com/andreacappadona17/agent-waker/compare/agent-waker-v0.2.1...agent-waker-v0.3.0) (2026-09-07)
+
+
+### Features
+
+* publish under the [@andreacappadona17](https://github.com/andreacappadona17) scope ([662a8d5](https://github.com/andreacappadona17/agent-waker/commit/662a8d56b943f79818833e33579d45c0130ced11))
+
 ## [0.2.1](https://github.com/andreacappadona17/agent-waker/compare/agent-waker-v0.2.0...agent-waker-v0.2.1) (2026-09-07)
 
 
