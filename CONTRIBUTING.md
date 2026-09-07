@@ -127,6 +127,22 @@ GitHub side. Neither can be done from the repository:
 Until then, merging the release pull request cuts a GitHub release with a tag,
 a changelog and an SBOM, and publishes nothing.
 
+The first publish has to be done by hand, because npm configures a trusted
+publisher through an existing package's settings and there is nothing to
+configure until the name exists. From the released tag, not from `main`:
+
+```bash
+git checkout agent-waker-v<version>
+pnpm install --frozen-lockfile
+pnpm run build
+npm login
+npm publish --ignore-scripts
+```
+
+Then set the trusted publisher and `NPM_PUBLISH_ENABLED`, and every release
+after that publishes itself. Trusted publishing needs npm 11.5.1 and Node
+22.14.0 or newer, both of which the pinned toolchain already satisfies.
+
 Separately: the repository has to be public, or have Advanced Security enabled.
 CodeQL and Scorecard skip themselves while it is private.
 
