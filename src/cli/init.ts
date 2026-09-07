@@ -348,12 +348,29 @@ export async function initCommand(
     context.paths.config,
   );
   const now = environment.now();
-  // ponytail: one agent's cycle stands for the schedule, which holds while
-  // `notBefore` is global. Read the first enabled agent's when per-agent
-  // times become configurable from here.
-  const effective = effectiveAgentConfig(written, "claude");
-  const opensAt = cycleStartAt(effective, now);
-  const next = now < opensAt ? opensAt : cycleStartAt(effective, now + DAY_MS);
+
+  // `notBefore` can be set per agent, so both of the times below read every
+  // enabled agent rather than whichever one is listed first. Nothing enabled
+  // means nothing will happen, and then the global time is still the honest
+  // thing to show.
+  const enabledAgents = AGENT_IDS.filter((id) => written.agents[id].enabled);
+  const windows = (enabledAgents.length > 0 ? enabledAgents : AGENT_IDS).map(
+    (agentId) => {
+      const effective = effectiveAgentConfig(written, agentId);
+      const opens = cycleStartAt(effective, now);
+
+      return {
+        opens,
+        next: now < opens ? opens : cycleStartAt(effective, now + DAY_MS),
+      };
+    },
+  );
+
+  // The next decision point is the earliest window, not the first-listed.
+  const next = Math.min(...windows.map((window) => window.next));
+  // Past the earliest opening is enough for the catch-up offer below: a run
+  // then has at least one agent whose window is open.
+  const opensAt = Math.min(...windows.map((window) => window.opens));
 
   environment.write(
     [

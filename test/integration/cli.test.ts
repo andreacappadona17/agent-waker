@@ -1619,6 +1619,20 @@ describe("init", () => {
     expect(out).toContain("today 07:00");
   });
 
+  it("reports the earliest window when an agent sets its own time", async () => {
+    // `notBefore` can be set per agent, so the next thing that happens is not
+    // necessarily the global time, nor the first-listed agent's.
+    await writeConfig(
+      `${CONFIG}agents:\n  claude:\n    enabled: true\n  codex:\n    enabled: true\n    schedule:\n      notBefore: "06:30"\n`,
+    );
+
+    const { out } = await setUp(["init", "--time", "09:00"], {
+      now: at("05:00"),
+    });
+
+    expect(out).toContain("today 06:30");
+  });
+
   it("offers to catch up when the morning has already passed", async () => {
     const { questions } = await setUp(["init", "--time", "07:00"], {
       now: at("09:00"),

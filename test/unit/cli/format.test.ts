@@ -209,6 +209,22 @@ describe("table", () => {
     expect(coloured.indexOf("second")).toBe(plain.indexOf("second") + overhead);
   });
 
+  it("measures a double-width glyph as two columns", () => {
+    // The terminal draws `⏳` two columns wide, so a column two wide needs no
+    // padding after it. Counting it as one character adds a space and puts
+    // the row a column out from the one below it.
+    const [, , hourglass, ascii] = table(
+      ["A", "B"],
+      [
+        ["⏳", "second"],
+        ["ok", "third"],
+      ],
+    ).split("\n");
+
+    expect(hourglass).toBe("⏳  second");
+    expect(ascii).toBe("ok  third");
+  });
+
   it("does not pad the last column", () => {
     // Trailing whitespace shows up in diffs and in copied output.
     for (const line of table(["A", "B"], rows).split("\n")) {

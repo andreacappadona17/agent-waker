@@ -153,10 +153,17 @@ function parseLine(line: string): StoredEvent | undefined {
   }
 }
 
-/** Reads the most recent events, oldest first, across day files. */
+/**
+ * Reads the most recent events, oldest first, across day files.
+ *
+ * @param keep applied before the limit, so asking for the last twenty of one
+ * agent's events reads back as far as it has to rather than returning the two
+ * that survived a filter of the last twenty of everything.
+ */
 export async function readRecentEvents(
   directory: string,
   limit: number,
+  keep: (event: StoredEvent) => boolean = () => true,
 ): Promise<StoredEvent[]> {
   let names: string[];
 
@@ -175,7 +182,8 @@ export async function readRecentEvents(
     const events = text
       .split("\n")
       .map(parseLine)
-      .filter((event) => event !== undefined);
+      .filter((event) => event !== undefined)
+      .filter(keep);
 
     collected.unshift(...events);
 

@@ -179,6 +179,7 @@ export function parseActivation(result: ProcessResult): AgentObservation {
   // ponytail: no rules for authentication or network failures during an
   // activation, because no fixture of either has been captured. `codex login
   // status` already covers the authentication case before it gets this far.
+  // Unclassified costs an hourly recheck; add each rule with its fixture.
   return { kind: "unknown", detail };
 }
 

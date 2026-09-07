@@ -151,25 +151,18 @@ export async function logsCommand(
   const now = context.environment.now();
   const timeZone = context.config.timezone;
   const notBefore = formatLocalTime(context.config.schedule.notBefore);
-  const filtering = agents.length > 0 || !verbose;
-
-  // ponytail: read ten times the asked-for limit when filtering, because the
-  // filter runs afterwards — the last twenty Codex events should not come back
-  // as two because the other eighteen were Claude's. The ceiling is a day's
-  // events being more than ten times the limit, which needs a filter inside
-  // `readRecentEvents` rather than a wider read out here.
-  const events = (
-    await readRecentEvents(context.paths.logDir, filtering ? limit * 10 : limit)
-  )
-    .filter(
-      (event) =>
-        agents.length === 0 ||
-        (event.agent !== undefined && agents.includes(event.agent)),
-    )
-    // A no-op tick is written at debug and must not appear by default
-    // (UX §14); the same rule hides anything else written at that level.
-    .filter((event) => verbose || event.level !== "debug")
-    .slice(-limit);
+  // Filtered during the read rather than after it, so the last twenty Codex
+  // events are twenty however many of Claude's are interleaved with them.
+  // A no-op tick is written at debug and must not appear by default
+  // (UX §14); the same rule hides anything else written at that level.
+  const events = await readRecentEvents(
+    context.paths.logDir,
+    limit,
+    (event) =>
+      (agents.length === 0 ||
+        (event.agent !== undefined && agents.includes(event.agent))) &&
+      (verbose || event.level !== "debug"),
+  );
 
   if (events.length === 0) {
     context.environment.write(

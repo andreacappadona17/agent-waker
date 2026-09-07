@@ -65,12 +65,7 @@ Exit codes:
   4  unsupported on this platform
 `;
 
-/**
- * Why there is nothing to do here.
- *
- * ponytail: one supported platform, so one message. It becomes a lookup
- * against the available scheduler drivers when systemd lands.
- */
+/** Why there is nothing to do here. */
 const unsupportedPlatform = (platform: string): string =>
   `agent waker runs on macOS, and this is ${platformName(platform)}.
 Scheduling needs a launchd agent, which only macOS has. Linux support is

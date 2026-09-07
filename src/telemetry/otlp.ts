@@ -267,10 +267,16 @@ export function createTelemetry(options: TelemetryOptions): Telemetry {
   // ponytail: `timeoutMs` bounds how long `flush` waits, not how long the
   // process lives. `AbortSignal.timeout` abandons the request on schedule but
   // does not tear down undici's pending TCP connect, which holds the event loop
-  // until its own 10s connectTimeout — so a blackholed collector costs ~10.5s
-  // whatever this is set to. It costs it only on ticks that had something to
-  // export, which is a handful a day, so it is documented rather than fixed.
-  // Pass a dispatcher with `connect: { timeout }` if that stops being true.
+  // until its own 10s connectTimeout: measured on Node 24.14.0, a blackholed
+  // collector (SYN dropped, not refused) rejects at `timeoutMs` and then exits
+  // at ~10.5s whatever this is set to. Only ticks with something to export pay
+  // it, and an idle process outliving its work by 10s of a 60s interval blocks
+  // nothing — the lock is long released and the failure is already logged.
+  // Nor is it the one-line fix this comment used to promise: `connect:
+  // { timeout }` needs an undici `Agent`, and Node exports no dispatcher, so
+  // the upgrade is a runtime dependency, or an unref'd `net.connect` pre-flight
+  // ahead of the POST. Take one if a tick ever has to be dead before the next
+  // one starts.
   const post = async (
     path: string,
     body: unknown,

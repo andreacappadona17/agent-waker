@@ -401,10 +401,18 @@ function optionalDurationList(
 
 /** Rejects keys no reader asked for, so a typo is loud rather than ignored. */
 function rejectUnknownKeys(src: Source): void {
-  // ponytail: linear scan of the known paths per key. Both sets are tens of
-  // entries; build a prefix tree if the schema ever grows by an order of
-  // magnitude.
-  const known = [...src.known];
+  // Every proper prefix of every known path, so "is this key an interior node
+  // on the way to something a reader asked for?" is one lookup rather than a
+  // scan of the whole schema per key.
+  const interior = new Set<string>();
+
+  for (const path of src.known) {
+    const parts = path.split(".");
+
+    for (let index = 1; index < parts.length; index += 1) {
+      interior.add(parts.slice(0, index).join("."));
+    }
+  }
   const walk = (node: unknown, prefix: readonly string[]): void => {
     if (!isMap(node)) return;
 
@@ -415,7 +423,7 @@ function rejectUnknownKeys(src: Source): void {
 
       if (src.known.has(dotted)) continue;
 
-      if (!known.some((candidate) => candidate.startsWith(`${dotted}.`))) {
+      if (!interior.has(dotted)) {
         throw new ConfigError({
           file: src.file,
           path: pathText(path),

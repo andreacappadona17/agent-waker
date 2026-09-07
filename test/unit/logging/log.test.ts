@@ -356,6 +356,30 @@ describe("readRecentEvents", () => {
     ).toEqual(["event.3", "event.4"]);
   });
 
+  it("fills the limit with events that pass the filter", async () => {
+    // The last two Codex events are two, however many of Claude's are
+    // interleaved with them: filtering after a read of the last two would
+    // have come back empty.
+    const log = createEventLog({ directory });
+
+    for (let index = 0; index < 10; index += 1) {
+      await log.write({
+        timestamp: MORNING + index * 1_000,
+        level: "info",
+        event: `event.${String(index)}`,
+        agent: index % 5 === 0 ? "codex" : "claude",
+        runtime: "local",
+        fields: {},
+      });
+    }
+
+    expect(
+      (
+        await readRecentEvents(directory, 2, (event) => event.agent === "codex")
+      ).map((event) => event.event),
+    ).toEqual(["event.0", "event.5"]);
+  });
+
   it("skips a line that is not an event", async () => {
     // A log truncated by a crash, or an editor's stray keystroke.
     await writeFile(

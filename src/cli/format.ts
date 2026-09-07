@@ -181,11 +181,23 @@ export function relativeTime(
 // eslint-disable-next-line no-control-regex -- matching escape sequences is the point
 const ANSI_PATTERN = /\u001b\[\d+m/g;
 
-// ponytail: counts characters, not display columns. Every glyph this renders
-// is one column wide except the hourglass, which some terminals draw as two.
-// Reach for a width table only if that misalignment turns out to matter.
+// Display columns, not characters. `⏳` is drawn two columns wide, so padding
+// it as one leaves every cell to its right a column short. Emoji presentation
+// is the property that terminals draw double-width — no width table needed for
+// the handful of glyphs here — and segmenting into graphemes first keeps a
+// cluster that spans several code points, as anything pasted into a log field
+// may, from counting once per code point.
+const GRAPHEMES = new Intl.Segmenter("en", { granularity: "grapheme" });
+const DOUBLE_WIDTH = /\p{Emoji_Presentation}/u;
+
 function visibleWidth(text: string): number {
-  return text.replace(ANSI_PATTERN, "").length;
+  let width = 0;
+
+  for (const { segment } of GRAPHEMES.segment(text.replace(ANSI_PATTERN, ""))) {
+    width += DOUBLE_WIDTH.test(segment) ? 2 : 1;
+  }
+
+  return width;
 }
 
 /** Lays out a header, a rule and some rows, padding to the visible width. */

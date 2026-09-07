@@ -26,8 +26,6 @@ import { localDateAt, type Instant, type LocalDate } from "#src/core/time.js";
  * no quota. An hour is slow enough not to spam a broken install and fast enough
  * that a fix made over coffee is picked up the same morning.
  */
-// ponytail: a constant, not a setting. It becomes configurable the first time
-// somebody wants a different value, and not before.
 export const LOCAL_RECHECK_MS = 3_600_000;
 
 /** A state under construction; absent fields are dropped rather than stored. */

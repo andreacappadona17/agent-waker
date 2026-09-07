@@ -53,8 +53,23 @@ export async function writeAtomic(
     await copyFile(path, options.backupPath).catch(() => undefined);
   }
 
-  // ponytail: the directory entry itself is not fsynced. Losing the rename in
-  // a power cut costs one redundant activation, the same price the
-  // corrupt-file path already pays. Add it if that ever stops being true.
   await rename(temporaryPath, path);
+
+  // The rename is atomic, but the directory entry that records it is itself
+  // buffered: without this a power cut can land the new file's bytes and lose
+  // the swap, which reads back as the previous contents rather than as
+  // corruption. Best effort, because a filesystem that refuses to fsync a
+  // directory must not fail every write — the cost of missing it is one
+  // redundant activation, the price the corrupt-file path already pays.
+  const directory = await open(dirname(path), "r").catch(() => undefined);
+
+  if (directory !== undefined) {
+    try {
+      await directory.sync();
+    } catch {
+      // See above: durability we would like, not durability we depend on.
+    } finally {
+      await directory.close();
+    }
+  }
 }
