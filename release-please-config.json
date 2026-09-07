@@ -4,7 +4,8 @@
     ".": {
       "release-type": "node",
       "bump-minor-pre-major": true,
-      "extra-files": ["src/cli/main.ts"]
+      "extra-files": ["src/cli/main.ts"],
+      "component": "agent-waker"
     }
   }
 }

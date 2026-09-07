@@ -116,9 +116,9 @@ changelog by hand.
 The release workflow publishes to npm once two things are true on the npm and
 GitHub side. Neither can be done from the repository:
 
-- **A trusted publisher on npm.** The `agent-waker` package has to name this
-  repository and `.github/workflows/release.yml` under its publishing access
-  settings. The workflow then authenticates with a short-lived OIDC token
+- **A trusted publisher on npm.** The `@andreacappadona17/agent-waker` package
+  has to name this repository and `.github/workflows/release.yml` under its
+  publishing access settings. The workflow then authenticates with a short-lived OIDC token
   instead of a stored one, and the published version carries provenance. There
   is deliberately no `NPM_TOKEN` to leak.
 - **The repository variable `NPM_PUBLISH_ENABLED` set to `true`.** Without it
@@ -129,15 +129,23 @@ a changelog and an SBOM, and publishes nothing.
 
 The first publish has to be done by hand, because npm configures a trusted
 publisher through an existing package's settings and there is nothing to
-configure until the name exists. From the released tag, not from `main`:
+configure until the name exists. The scope has to be your own npm user or an
+organisation you belong to, so check `npm whoami` agrees with it before
+publishing — a mismatch is a 403 and nothing else. From the released tag, not
+from `main`:
 
 ```bash
 git checkout agent-waker-v<version>
 pnpm install --frozen-lockfile
 pnpm run build
 npm login
+npm whoami            # must be andreacappadona17, or the scope will refuse
 npm publish --ignore-scripts
 ```
+
+The package is scoped, and a scoped package is private by default; publishing
+it publicly is `publishConfig.access` in `package.json` rather than a flag to
+remember, so a hand publish and a workflow publish cannot differ.
 
 Then set the trusted publisher and `NPM_PUBLISH_ENABLED`, and every release
 after that publishes itself. Trusted publishing needs npm 11.5.1 and Node

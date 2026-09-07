@@ -1,5 +1,5 @@
 {
-  "name": "agent-waker",
+  "name": "@andreacappadona17/agent-waker",
   "version": "0.2.1",
   "description": "Align coding-agent subscription windows with when you work.",
   "keywords": [
@@ -37,6 +37,9 @@
   "files": [
     "dist"
   ],
+  "publishConfig": {
+    "access": "public"
+  },
   "bin": {
     "agent-waker": "./dist/cli/bin.js"
   },
