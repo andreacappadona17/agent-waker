@@ -113,43 +113,40 @@ a release pull request up to date from them; merging it bumps the version,
 writes `CHANGELOG.md` and cuts a GitHub release. Do not edit versions or the
 changelog by hand.
 
-The release workflow publishes to npm once two things are true on the npm and
-GitHub side. Neither can be done from the repository:
+The package is published as
+[`@andreacappadona17/agent-waker`](https://www.npmjs.com/package/@andreacappadona17/agent-waker).
+It is scoped, and a scoped package is private by default, so public access is
+declared as `publishConfig.access` in `package.json` rather than passed as a
+flag — a publish by hand and a publish from the workflow cannot differ.
 
-- **A trusted publisher on npm.** The `@andreacappadona17/agent-waker` package
-  has to name this repository and `.github/workflows/release.yml` under its
-  publishing access settings. The workflow then authenticates with a short-lived OIDC token
-  instead of a stored one, and the published version carries provenance. There
-  is deliberately no `NPM_TOKEN` to leak.
+Merging the release pull request cuts a GitHub release with a tag, a changelog
+and an SBOM. It publishes to npm as well once both of these are set up, neither
+of which can be done from the repository:
+
+- **A trusted publisher on npm.** The package has to name this repository and
+  `.github/workflows/release.yml` under its publishing access settings — the
+  filename must match exactly, extension included. The workflow then
+  authenticates with a short-lived OIDC token instead of a stored one, and the
+  published version carries provenance. There is deliberately no `NPM_TOKEN` to
+  leak.
 - **The repository variable `NPM_PUBLISH_ENABLED` set to `true`.** Without it
   the publish job is skipped, because a published version cannot be taken back.
 
-Until then, merging the release pull request cuts a GitHub release with a tag,
-a changelog and an SBOM, and publishes nothing.
-
-The first publish has to be done by hand, because npm configures a trusted
-publisher through an existing package's settings and there is nothing to
-configure until the name exists. The scope has to be your own npm user or an
-organisation you belong to, so check `npm whoami` agrees with it before
-publishing — a mismatch is a 403 and nothing else. From the released tag, not
-from `main`:
+Until both are in place, publishing is a manual step from the released tag,
+never from `main`, so that what ships matches what was tagged:
 
 ```bash
 git checkout agent-waker-v<version>
 pnpm install --frozen-lockfile
 pnpm run build
-npm login
-npm whoami            # must be andreacappadona17, or the scope will refuse
+npm whoami            # must be the owner of the scope, or npm answers 403
 npm publish --ignore-scripts
 ```
 
-The package is scoped, and a scoped package is private by default; publishing
-it publicly is `publishConfig.access` in `package.json` rather than a flag to
-remember, so a hand publish and a workflow publish cannot differ.
-
-Then set the trusted publisher and `NPM_PUBLISH_ENABLED`, and every release
-after that publishes itself. Trusted publishing needs npm 11.5.1 and Node
-22.14.0 or newer, both of which the pinned toolchain already satisfies.
+A published version can take a few minutes to become visible: the tarball is
+installable before the metadata is served, so `npm view` answering 404 straight
+after a publish does not mean the publish failed. `npm access get status` is
+the reliable check.
 
 Separately: the repository has to be public, or have Advanced Security enabled.
 CodeQL and Scorecard skip themselves while it is private.

@@ -6,8 +6,8 @@ Align coding-agent subscription windows with when you work.
 [![CodeQL](https://github.com/andreacappadona17/agent-waker/actions/workflows/codeql.yml/badge.svg)](https://github.com/andreacappadona17/agent-waker/actions/workflows/codeql.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-> **Not on npm yet.** The command works — it is macOS-only for now — but there
-> is no published package, so install it [from a clone](#run-it-from-a-clone).
+> **macOS only for now.** Scheduling needs a launchd agent; any other platform
+> is refused rather than half-configured.
 
 ## The problem
 
@@ -89,31 +89,14 @@ of the contract: `0` success or a tick that deferred, `1` failed, `2` bad
 configuration or command line, `3` something needs attention, `4` unsupported
 platform.
 
-## Run it from a clone
-
-macOS only for now: scheduling needs a launchd agent, and any other platform is
-refused with exit `4` rather than half-configured.
+## Install
 
 ```bash
-git clone https://github.com/andreacappadona17/agent-waker.git
-cd agent-waker
-corepack enable            # the pnpm version is pinned in package.json
-pnpm install
-pnpm build
-```
-
-Then either run it in place:
-
-```bash
-node dist/cli/bin.js status
-```
-
-or put `agent-waker` on your `PATH`:
-
-```bash
-pnpm link --global
+npm install -g @andreacappadona17/agent-waker
 agent-waker status
 ```
+
+The package is scoped; the command is not.
 
 Set it up when you are ready to have it run on its own:
 
@@ -122,16 +105,34 @@ agent-waker init                   # asks which agents, and from what time
 agent-waker init --agents claude --time 07:00 --timezone Europe/Rome
 ```
 
-**The scheduler remembers where you ran it from.** `init` records the
-interpreter and the entry-point path in the LaunchAgent, so a clone that later
-moves, gets deleted, or is rebuilt under a different Node version leaves a
-schedule pointing at a file that is no longer there. `agent-waker doctor` says
-so, and `agent-waker init --repair` rebuilds it from wherever the code lives
-now. `agent-waker uninstall` removes the schedule, the configuration and the
-state, and touches none of your agents.
+**The scheduler remembers which Node ran it.** `init` records the interpreter
+and the entry-point path in the LaunchAgent, so removing or replacing that Node
+— switching versions under `nvm` is the usual way — leaves a schedule pointing
+at a file that is no longer there. `agent-waker doctor` says so, and
+`agent-waker init --repair` rebuilds it from wherever things live now.
+`agent-waker uninstall` removes the schedule, the configuration and the state,
+and touches none of your agents.
 
 Nothing here needs a provider credential of its own: agent waker uses the
 subscription login each agent CLI already has, and never reads or stores it.
+
+### From a clone
+
+For working on it, or for running a version that is not released yet:
+
+```bash
+git clone https://github.com/andreacappadona17/agent-waker.git
+cd agent-waker
+corepack enable            # the pnpm version is pinned in package.json
+pnpm install
+pnpm build
+node dist/cli/bin.js status
+```
+
+`pnpm link --global` puts `agent-waker` on your `PATH` from the clone instead
+of from npm. The caveat above then covers the clone as well: move it or delete
+it and the schedule points at nothing, which `doctor` reports and
+`init --repair` fixes.
 
 ## Configuration
 
