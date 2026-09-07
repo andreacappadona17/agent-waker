@@ -101,8 +101,9 @@ const COMMANDS = new Set([
 ]);
 
 // Kept here rather than read from package.json: the built CLI runs from dist,
-// where the manifest is not necessarily beside it.
-const VERSION = "0.1.0";
+// where the manifest is not necessarily beside it. release-please owns the
+// number through the annotation, and a unit test fails if the two drift.
+export const VERSION = "0.2.0"; // x-release-please-version
 
 export interface ParsedCommand {
   readonly command: string;
