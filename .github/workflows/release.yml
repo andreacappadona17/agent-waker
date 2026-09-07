@@ -27,9 +27,6 @@ jobs:
     steps:
       # Maintains a rolling release pull request from Conventional Commits.
       # Merging it bumps the version, writes CHANGELOG.md and cuts the release.
-      #
-      # npm publishing is not wired up: it needs `private` removed from
-      # package.json, an entry point, and trusted publishing configured.
       - name: Run release-please
         id: release
         uses: googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7 # v5.0.0
@@ -74,3 +71,56 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG: ${{ needs.prepare.outputs.tag }}
         run: gh release upload "$TAG" sbom.cdx.json --clobber
+
+  publish:
+    name: Publish to npm
+    needs: prepare
+    # Two gates. `released` means a release pull request was merged rather than
+    # updated, so an ordinary push publishes nothing. `NPM_PUBLISH_ENABLED` is
+    # the repository variable that has to be set deliberately, because a
+    # published version cannot be taken back.
+    if: >-
+      needs.prepare.outputs.released == 'true' &&
+      vars.NPM_PUBLISH_ENABLED == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      # Trusted publishing: npm exchanges this short-lived OIDC token for a
+      # publish credential, so there is no long-lived secret to leak, and the
+      # release carries provenance without asking for it. The package's npm
+      # settings have to name this repository and this workflow file.
+      id-token: write
+    steps:
+      # The tag release-please wrote, not the branch head: a push that lands
+      # while this runs must not be what gets published.
+      - name: Check out the released commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.prepare.outputs.sha }}
+          persist-credentials: false
+
+      - name: Set up toolchain
+        uses: ./.github/actions/setup
+
+      # Trusted publishing arrived in 11.5.1. An older npm fails with an
+      # authentication error that says nothing about the real cause.
+      - name: Require an npm that can publish without a token
+        run: |
+          printf '11.5.1\n%s\n' "$(npm --version)" | sort -V -C || {
+            echo "npm $(npm --version) cannot use trusted publishing; 11.5.1 or newer is required." >&2
+            exit 1
+          }
+
+      - name: Build
+        run: pnpm run build
+
+      # What ships, in the log, before it ships. `files` is package.json's
+      # allow-list, so this is the check that it still says what we think.
+      - name: Show what will be published
+        run: npm pack --dry-run
+
+      # --ignore-scripts: the build above is the build, and nothing in a
+      # lifecycle hook should be able to change what goes in the tarball.
+      - name: Publish
+        run: npm publish --ignore-scripts

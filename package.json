@@ -23,7 +23,6 @@
   "license": "MIT",
   "author": "Andrea Cappadona",
   "type": "module",
-  "private": true,
   "engines": {
     "node": ">=24"
   },

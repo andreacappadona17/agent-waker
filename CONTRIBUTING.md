@@ -113,13 +113,22 @@ a release pull request up to date from them; merging it bumps the version,
 writes `CHANGELOG.md` and cuts a GitHub release. Do not edit versions or the
 changelog by hand.
 
-Two things must happen before a release can be more than a GitHub release:
+The release workflow publishes to npm once two things are true on the npm and
+GitHub side. Neither can be done from the repository:
 
-- `private` has to come out of `package.json`, and the package needs an entry
-  point (`bin`, `exports`, `types`). Publishing is additionally gated on the
-  repository variable `NPM_PUBLISH_ENABLED`.
-- The repository has to be public, or have Advanced Security enabled. CodeQL and
-  Scorecard skip themselves while it is private.
+- **A trusted publisher on npm.** The `agent-waker` package has to name this
+  repository and `.github/workflows/release.yml` under its publishing access
+  settings. The workflow then authenticates with a short-lived OIDC token
+  instead of a stored one, and the published version carries provenance. There
+  is deliberately no `NPM_TOKEN` to leak.
+- **The repository variable `NPM_PUBLISH_ENABLED` set to `true`.** Without it
+  the publish job is skipped, because a published version cannot be taken back.
+
+Until then, merging the release pull request cuts a GitHub release with a tag,
+a changelog and an SBOM, and publishes nothing.
+
+Separately: the repository has to be public, or have Advanced Security enabled.
+CodeQL and Scorecard skip themselves while it is private.
 
 ## Continuous integration
 
