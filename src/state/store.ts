@@ -8,7 +8,8 @@
  * tick takes an advisory lock and a second one declines rather than racing.
  */
 
-import { mkdir, open, readFile, rm } from "node:fs/promises";
+import { spawn } from "node:child_process";
+import { mkdir, open, readFile } from "node:fs/promises";
 import { join } from "node:path";
 
 import { emptyState, type AgentWakerState } from "#src/core/state.js";
@@ -19,18 +20,6 @@ import type { Instant } from "#src/core/time.js";
 /** Owner read/write. State is not secret, but it is nobody else's business. */
 const FILE_MODE = 0o600;
 const DIRECTORY_MODE = 0o700;
-
-/**
- * How long a lock may be held before it is assumed abandoned.
- *
- * The liveness check below catches an ordinary crash; this catches the case it
- * cannot, where the pid has been recycled by an unrelated process. Generous
- * next to a tick that spends at most a couple of minutes talking to providers.
- */
-const STALE_LOCK_MS = 900_000;
-
-/** How many times to clear an abandoned lock before giving up on the run. */
-const STEAL_ATTEMPTS = 3;
 
 /** Where the state came from, so the caller knows whether to warn. */
 export type StateSource = "file" | "backup" | "empty" | "reset";
@@ -72,18 +61,6 @@ interface LockFile {
 
 function isMissing(error: unknown): boolean {
   return (error as NodeJS.ErrnoException).code === "ENOENT";
-}
-
-/** Whether a process is still around to be holding the lock. */
-function isRunning(pid: number): boolean {
-  try {
-    // Signal 0 performs the permission and existence checks without delivering.
-    process.kill(pid, 0);
-    return true;
-  } catch (error) {
-    // EPERM means it exists and belongs to somebody else, which still counts.
-    return (error as NodeJS.ErrnoException).code === "EPERM";
-  }
 }
 
 /** Opens a state store rooted at a directory, creating it on first write. */
@@ -147,56 +124,22 @@ export function createStateStore(directory: string): StateStore {
       const parsed: unknown = JSON.parse(await readFile(lockPath, "utf8"));
       const { pid, since } = parsed as Partial<LockFile>;
 
-      if (typeof pid !== "number" || typeof since !== "number") {
+      if (
+        typeof pid !== "number" ||
+        !Number.isSafeInteger(pid) ||
+        pid <= 0 ||
+        typeof since !== "number" ||
+        !Number.isFinite(since) ||
+        Math.abs(since) > 8.64e15
+      ) {
         return undefined;
       }
 
       return { pid, since };
     } catch {
-      // Absent, half-written or hand-edited: none of them is a live holder.
+      // Metadata is diagnostic only; the kernel decides whether it is locked.
       return undefined;
     }
-  };
-
-  const acquire = async (): Promise<void> => {
-    await mkdir(directory, { recursive: true, mode: DIRECTORY_MODE });
-
-    // Bounded rather than recursive: each pass may clear one abandoned lock,
-    // and two processes clearing the same one must not chase each other.
-    for (let attempt = 0; attempt < STEAL_ATTEMPTS; attempt += 1) {
-      const lock: LockFile = { pid: process.pid, since: Date.now() };
-
-      try {
-        // "wx" fails if the file exists, which is what makes this a lock.
-        const handle = await open(lockPath, "wx", FILE_MODE);
-
-        try {
-          await handle.writeFile(JSON.stringify(lock), "utf8");
-        } finally {
-          await handle.close();
-        }
-
-        return;
-      } catch (error) {
-        if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
-      }
-
-      const held = await readLock();
-
-      if (
-        held !== undefined &&
-        isRunning(held.pid) &&
-        Date.now() - held.since < STALE_LOCK_MS
-      ) {
-        throw new LockedError(held.pid, held.since);
-      }
-
-      // Abandoned by a run that was killed, or left by a pid that has since
-      // been reused. Either way nobody is coming back for it.
-      await rm(lockPath, { force: true });
-    }
-
-    throw new LockedError(0, Date.now());
   };
 
   return {
@@ -204,12 +147,43 @@ export function createStateStore(directory: string): StateStore {
     save,
 
     async withLock<T>(run: () => Promise<T>): Promise<T> {
-      await acquire();
+      await mkdir(directory, { recursive: true, mode: DIRECTORY_MODE });
+      const handle = await open(lockPath, "a+", FILE_MODE);
 
       try {
+        // flock locks the shared open file description. The child sets it on
+        // inherited fd 3; our handle keeps it held after the child exits.
+        // Closing the handle (including on process death) releases it. Never
+        // unlink this file: another opener must always lock the same inode.
+        const code = await new Promise<number | null>((resolve, reject) => {
+          const child = spawn(
+            process.platform === "darwin" ? "/usr/bin/lockf" : "/usr/bin/flock",
+            process.platform === "darwin"
+              ? ["-s", "-t", "0", "3"]
+              : ["-n", "-E", "75", "3"],
+            { stdio: ["ignore", "ignore", "ignore", handle.fd] },
+          );
+          child.on("error", reject);
+          child.on("close", resolve);
+        });
+
+        if (code === 75) {
+          const held = await readLock();
+          throw new LockedError(held?.pid ?? 0, held?.since ?? Date.now());
+        }
+        if (code !== 0)
+          throw new Error(
+            `Could not acquire state lock (exit ${String(code)}).`,
+          );
+
+        await handle.truncate(0);
+        await handle.writeFile(
+          JSON.stringify({ pid: process.pid, since: Date.now() }),
+          "utf8",
+        );
         return await run();
       } finally {
-        await rm(lockPath, { force: true });
+        await handle.close();
       }
     },
   };

@@ -403,6 +403,8 @@ export async function tick(
 
       agents[agentId] = next;
       outcomes.push(outcomeOf(agentId, next));
+      // Commit each provider outcome before logging or contacting another agent.
+      await store.save({ version: 1, updatedAt: now, agents });
 
       await emit(
         {
@@ -442,7 +444,7 @@ export async function tick(
 
     const saved: AgentWakerState = { version: 1, updatedAt: now, agents };
 
-    await store.save(saved);
+    if (evaluated.length === 0) await store.save(saved);
     root.end({
       attributes: { "agent_waker.agents_evaluated": evaluated.length },
     });

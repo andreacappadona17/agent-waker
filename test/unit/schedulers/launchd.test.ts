@@ -517,3 +517,31 @@ describe("uninstall", () => {
     ).resolves.toBeUndefined();
   });
 });
+
+it("preserves configured XDG directories in a clean scheduler environment", async () => {
+  const xdg = {
+    XDG_CONFIG_HOME: join(home, "config's space"),
+    XDG_STATE_HOME: join(home, "state"),
+    XDG_CACHE_HOME: join(home, "cache"),
+    XDG_DATA_HOME: join(home, "data"),
+  };
+  const entry = join(home, "environment.mjs");
+  const launcher = join(home, "runner");
+  await writeFile(
+    entry,
+    `console.log(JSON.stringify(Object.fromEntries(${JSON.stringify(Object.keys(xdg))}.map(k => [k, process.env[k]]))))`,
+  );
+  await writeFile(
+    launcher,
+    renderLauncher({
+      ...installConfig,
+      nodePath: process.execPath,
+      entrypoint: entry,
+      xdg,
+    }),
+  );
+  const { stdout } = await run("/bin/sh", [launcher], {
+    env: { HOME: home, PATH: "/usr/bin:/bin" },
+  });
+  expect(JSON.parse(stdout)).toEqual(xdg);
+});

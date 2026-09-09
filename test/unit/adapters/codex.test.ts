@@ -332,3 +332,11 @@ describe("createCodexAdapter", () => {
     ).toEqual(["--sandbox"]);
   });
 });
+
+it("ignores non-object JSON events before a usage-limit failure", () => {
+  expect(
+    parseActivation(
+      ran({ exitCode: 1, stdout: 'null\n[]\n42\n{"message":"usage limit"}\n' }),
+    ),
+  ).toMatchObject({ kind: "blocked", reason: "quota" });
+});

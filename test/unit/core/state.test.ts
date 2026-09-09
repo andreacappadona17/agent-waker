@@ -338,3 +338,14 @@ describe("nextCycleAt", () => {
     });
   });
 });
+
+it("advances the calendar date for an early opening on a 25-hour day", () => {
+  const early = { ...config, notBefore: { hour: 0, minute: 30 } };
+  expect(
+    nextCycleAt(
+      early,
+      { phase: "activated", cycleDate: "2026-10-25" },
+      utc("2026-10-25T10:00:00"),
+    ),
+  ).toBe(utc("2026-10-25T23:30:00"));
+});

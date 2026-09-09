@@ -976,3 +976,32 @@ describe("the event log", () => {
     expect(await test.events()).toContain("state.reset");
   });
 });
+
+it("saves a successful activation before a log failure can interrupt the tick", async () => {
+  const store = createStateStore(join(directory, "state"));
+  const claude = createFakeAdapter("claude");
+  const codex = createFakeAdapter("codex");
+  const context = {
+    config: config(),
+    store,
+    registry: createRegistry([claude, codex]),
+    log: {
+      write(event: { event: string }) {
+        if (event.event === "agent.activated")
+          throw new Error("log unavailable");
+        return Promise.resolve();
+      },
+    },
+    telemetry: NO_TELEMETRY,
+    runner: createProcessRunner(),
+    workDir: directory,
+    runtime: "local" as const,
+    now: () => at("07:00"),
+    wallClock: Date.now,
+  };
+  await expect(tick(context)).rejects.toThrow("log unavailable");
+  expect((await store.load()).state.agents.claude.phase).toBe("activated");
+  await tick({ ...context, log: { write: () => Promise.resolve() } });
+  expect(claude.calls.activate).toBe(1);
+  expect(codex.calls.activate).toBe(1);
+});

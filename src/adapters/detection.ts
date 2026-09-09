@@ -1,5 +1,8 @@
 /** Shared between adapters: reading what a provider says about itself. */
 
+import type { AgentObservation } from "#src/core/observation.js";
+import type { ProcessResult } from "#src/process/runner.js";
+
 import type { DetectionResult } from "#src/adapters/contract.js";
 import type { ExecutableDiscovery } from "#src/process/discovery.js";
 
@@ -57,4 +60,23 @@ export function missingFlags(
   return activationArgs.filter(
     (argument) => argument.startsWith("-") && !offered.has(argument),
   );
+}
+
+/** Maps process startup and timeout failures consistently across adapters. */
+export function processFailure(
+  result: ProcessResult,
+): AgentObservation | undefined {
+  if (result.timedOut) return { kind: "runtime_error", category: "timeout" };
+
+  switch (result.startFailure) {
+    case undefined:
+      return undefined;
+    case "ENOENT":
+      return { kind: "runtime_error", category: "executable_missing" };
+    case "ENOEXEC":
+    case "EACCES":
+      return { kind: "runtime_error", category: "broken_install" };
+    default:
+      return { kind: "runtime_error", category: "unknown" };
+  }
 }

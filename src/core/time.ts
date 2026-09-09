@@ -261,3 +261,11 @@ export function resolveLocalTime(
     ? Math.min(...occurrences)
     : Math.max(...candidates);
 }
+
+/** Advances a calendar date without assuming the local day lasts 24 hours. */
+export function nextLocalDate(date: LocalDate): LocalDate {
+  return localDateAt(
+    resolveLocalTime(date, { hour: 0, minute: 0 }, "UTC") + DAY_MS,
+    "UTC",
+  );
+}

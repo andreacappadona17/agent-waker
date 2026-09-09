@@ -11,6 +11,7 @@
  */
 
 import { readFile } from "node:fs/promises";
+import { dirname } from "node:path";
 
 import { schedulerFor, type CommandContext } from "#src/cli/context.js";
 import { renderDetection, surveyAgents } from "#src/cli/detect.js";
@@ -21,7 +22,9 @@ import { editConfig } from "#src/config/edit.js";
 import { AGENT_IDS, asAgents, type AgentId } from "#src/core/agent.js";
 import { cycleStartAt } from "#src/core/state.js";
 import {
-  DAY_MS,
+  localDateAt,
+  nextLocalDate,
+  resolveLocalTime,
   formatLocalTime,
   parseLocalTime,
   parseTimeZone,
@@ -189,6 +192,12 @@ async function installScheduler(context: CommandContext): Promise<void> {
     entrypoint: context.environment.entrypoint,
     intervalSeconds: TICK_INTERVAL_SECONDS,
     logDirectory: context.paths.logDir,
+    xdg: {
+      XDG_CONFIG_HOME: dirname(context.paths.configDir),
+      XDG_STATE_HOME: dirname(context.paths.stateDir),
+      XDG_CACHE_HOME: dirname(context.paths.cacheDir),
+      XDG_DATA_HOME: dirname(dirname(context.paths.launcherDir)),
+    },
   });
 }
 
@@ -361,7 +370,14 @@ export async function initCommand(
 
       return {
         opens,
-        next: now < opens ? opens : cycleStartAt(effective, now + DAY_MS),
+        next:
+          now < opens
+            ? opens
+            : resolveLocalTime(
+                nextLocalDate(localDateAt(now, effective.timezone)),
+                effective.notBefore,
+                effective.timezone,
+              ),
       };
     },
   );

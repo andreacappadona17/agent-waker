@@ -1,4 +1,6 @@
-import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { once } from "node:events";
+import { spawn } from "node:child_process";
+import { mkdtemp, open, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -259,4 +261,66 @@ describe("withLock", () => {
 
     expect(await store.withLock(() => Promise.resolve("taken"))).toBe("taken");
   });
+});
+
+it("respects a kernel lock before its owner metadata is written", async () => {
+  const handle = await open(lockPath(), "a+", 0o600);
+  try {
+    const code = await new Promise<number | null>((resolve, reject) => {
+      const child = spawn(
+        process.platform === "darwin" ? "/usr/bin/lockf" : "/usr/bin/flock",
+        process.platform === "darwin"
+          ? ["-s", "-t", "0", "3"]
+          : ["-n", "-E", "75", "3"],
+        { stdio: ["ignore", "ignore", "ignore", handle.fd] },
+      );
+      child.on("error", reject);
+      child.on("close", resolve);
+    });
+    expect(code).toBe(0);
+    await expect(
+      createStateStore(directory).withLock(() => Promise.resolve("entered")),
+    ).rejects.toThrow(LockedError);
+  } finally {
+    await handle.close();
+  }
+  await expect(
+    createStateStore(directory).withLock(() => Promise.resolve("released")),
+  ).resolves.toBe("released");
+});
+
+it("releases the kernel lock when its owning process is killed", async () => {
+  const moduleUrl = new URL("../../../src/state/store.ts", import.meta.url)
+    .href;
+  const child = spawn(
+    process.execPath,
+    [
+      "--conditions=development",
+      "--input-type=module",
+      "-e",
+      `
+    import { createStateStore } from ${JSON.stringify(moduleUrl)};
+    await createStateStore(process.argv[1]).withLock(async () => {
+      process.stdout.write("locked");
+      process.stdin.resume();
+      await new Promise(resolve => process.stdin.once("end", resolve));
+    });
+  `,
+      directory,
+    ],
+    { stdio: "pipe" },
+  );
+  const exited = once(child, "exit");
+  try {
+    await once(child.stdout, "data");
+    await expect(
+      createStateStore(directory).withLock(() => Promise.resolve()),
+    ).rejects.toThrow(LockedError);
+  } finally {
+    child.kill("SIGKILL");
+    await exited;
+  }
+  await expect(
+    createStateStore(directory).withLock(() => Promise.resolve("recovered")),
+  ).resolves.toBe("recovered");
 });

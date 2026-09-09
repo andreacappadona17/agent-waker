@@ -1344,6 +1344,28 @@ describe("init", () => {
     options: Parameters<typeof invoke>[1] = {},
   ): Promise<Invocation> => invoke(argv, { ...options, runner: installs });
 
+  it("records the resolved XDG locations when installing and repairing", async () => {
+    const env = {
+      XDG_CONFIG_HOME: join(home, "custom-config"),
+      XDG_STATE_HOME: join(home, "custom-state"),
+      XDG_CACHE_HOME: join(home, "custom-cache"),
+      XDG_DATA_HOME: join(home, "custom-data"),
+    };
+    for (const argv of [
+      ["init", "--agents", "none"],
+      ["init", "--repair"],
+    ]) {
+      expect((await setUp(argv, { env, now: at("06:00") })).code).toBe(EXIT.ok);
+      const launcher = await readFile(
+        join(env.XDG_DATA_HOME, "agent-waker", "bin", "agent-waker-runner"),
+        "utf8",
+      );
+      for (const [name, value] of Object.entries(env)) {
+        expect(launcher).toContain(`export ${name}='${value}'`);
+      }
+    }
+  });
+
   it("writes a configuration and installs the scheduler", async () => {
     const { code, out } = await setUp(["init"], { now: at("06:00") });
 
@@ -1744,6 +1766,72 @@ describe("uninstall", () => {
     await invoke(["uninstall"], { runner: removes, answers: ["y"] });
 
     await expect(configFile()).rejects.toThrow();
+  });
+
+  it("does not remove a lock or configuration while a tick is running", async () => {
+    await writeConfig();
+    const directory = join(home, ".local", "state", "agent-waker");
+    const store = createStateStore(directory);
+    await store.withLock(async () => {
+      const before = await stat(join(directory, "lock"));
+      expect(
+        (await invoke(["uninstall", "--yes"], { runner: removes })).code,
+      ).toBe(EXIT.failed);
+      expect((await stat(join(directory, "lock"))).ino).toBe(before.ino);
+      expect(await configFile()).toContain("version: 1");
+    });
+  });
+
+  it.each(["nested", "..nested"])(
+    "refuses cache cleanup when the state directory is inside %s",
+    async (name) => {
+      await writeConfig();
+      const env = {
+        XDG_STATE_HOME: join(home, ".cache", "agent-waker", "work", name),
+      };
+      expect((await invoke(["tick"], { env, now: at("07:00") })).code).toBe(
+        EXIT.ok,
+      );
+      const { code, err } = await invoke(["uninstall", "--yes"], {
+        env,
+        runner: removes,
+      });
+      expect(code).toBe(EXIT.failed);
+      expect(err).toContain("state directory is inside");
+      await expect(configFile()).resolves.toContain("version: 1");
+    },
+  );
+
+  it("preserves the lock and retained logs when XDG directories coincide", async () => {
+    await writeConfig();
+    const env = {
+      XDG_CONFIG_HOME: join(home, ".config"),
+      XDG_STATE_HOME: join(home, ".config"),
+      XDG_CACHE_HOME: join(home, ".config"),
+    };
+    expect((await invoke(["tick"], { env, now: at("07:00") })).code).toBe(
+      EXIT.ok,
+    );
+    const directory = join(home, ".config", "agent-waker");
+    const before = await stat(join(directory, "lock"));
+    expect(
+      (await invoke(["uninstall", "--yes"], { env, runner: removes })).code,
+    ).toBe(EXIT.ok);
+    expect((await stat(join(directory, "lock"))).ino).toBe(before.ino);
+    await expect(stat(join(directory, "logs"))).resolves.toBeDefined();
+    await expect(configFile()).rejects.toThrow();
+  });
+
+  it("keeps the lock inode after uninstall so existing openers stay synchronized", async () => {
+    await writeConfig();
+    await invoke(["tick"], { now: at("07:00") });
+    const lock = join(home, ".local", "state", "agent-waker", "lock");
+    const before = await stat(lock);
+    expect(
+      (await invoke(["uninstall", "--yes", "--logs"], { runner: removes }))
+        .code,
+    ).toBe(EXIT.ok);
+    expect((await stat(lock)).ino).toBe(before.ino);
   });
 
   it("works when there was never a configuration", async () => {

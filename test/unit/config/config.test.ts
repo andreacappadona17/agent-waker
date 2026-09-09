@@ -70,7 +70,6 @@ describe("parseConfig", () => {
         longTerm: { intervalMs: 21_600_000 },
         transient: { delaysMs: DEFAULT_TRANSIENT_DELAYS_MS },
       },
-      runtime: { local: { tickIntervalMs: 60_000 } },
       logging: { level: "info" },
       agents: {
         claude: { enabled: true },
@@ -95,7 +94,6 @@ describe("parseConfig", () => {
         longTerm: { intervalMs: 21_600_000 },
         transient: { delaysMs: DEFAULT_TRANSIENT_DELAYS_MS },
       },
-      runtime: { local: { tickIntervalMs: 60_000 } },
       logging: { level: "info" },
       agents: {
         claude: { enabled: true },
@@ -542,4 +540,13 @@ describe("effectiveAgentConfig", () => {
     expect(effectiveAgentConfig(disabled, "codex").enabled).toBe(false);
     expect(effectiveAgentConfig(disabled, "claude").enabled).toBe(true);
   });
+});
+
+it("rejects unsupported scheduler intervals rather than silently ignoring them", () => {
+  expect(() =>
+    parseConfig(
+      `${MINIMAL}\nruntime:\n  local:\n    tickInterval: 2m\n`,
+      "config.yaml",
+    ),
+  ).toThrow(/tickInterval.*60s/);
 });
