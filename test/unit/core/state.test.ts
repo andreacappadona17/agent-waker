@@ -119,7 +119,7 @@ describe("rollDailyCycle", () => {
     });
 
     it("collapses an unfinished cycle into the new day", () => {
-      // ADR-008: yesterday's missed warmup has no value once today's is due, so
+      // Yesterday's missed warmup has no value once today's is due, so
       // it is replaced rather than queued behind it.
       const stale: AgentState = {
         phase: "waiting_unknown_reset",

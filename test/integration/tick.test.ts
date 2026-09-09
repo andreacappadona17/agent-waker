@@ -889,7 +889,7 @@ describe("the event log", () => {
     await test.run(at("05:00"));
 
     // A minute-level scheduler logging every no-op at info drowns the log it
-    // exists to write, so the tick drops to debug (ARCHITECTURE §34).
+    // exists to write, so the tick drops to debug.
     expect(await test.events()).toEqual([]);
   });
 

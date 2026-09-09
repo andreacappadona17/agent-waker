@@ -1,9 +1,9 @@
 /**
  * What a provider adapter has to implement.
  *
- * The line this draws is the product's most important one (ADR-004): an
- * adapter reports what a provider said, and the core decides what to do about
- * it. An adapter returning "retry in ten minutes" is wrong; the same adapter
+ * The line this draws is the product's most important one: an adapter reports
+ * what a provider said, and the core decides what to do about it. An adapter
+ * returning "retry in ten minutes" is wrong; the same adapter
  * returning "blocked, rolling window, resets at 08:23" is right. When it cannot
  * classify a response confidently it says so, rather than guessing a reset.
  */
@@ -59,7 +59,7 @@ export interface AuthResult {
    *
    * False for an API key even though it would happily answer: billing a user
    * per token to warm a subscription window they are already paying for is the
-   * opposite of what they asked for (ADR-005).
+   * opposite of what they asked for.
    */
   readonly supportsIntent: boolean;
   /** Non-identifying, for display. Never an address or a token. */
@@ -113,7 +113,7 @@ export interface AgentAdapter {
    * which of the activation's flags it no longer offers — a fact, not a
    * verdict, in keeping with the rest of this contract. A provider that
    * renames one otherwise fails at seven in the morning with nothing to point
-   * at (ARCHITECTURE §31).
+   * at.
    *
    * @returns the flags the provider did not offer; empty means all of them.
    */

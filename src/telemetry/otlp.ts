@@ -2,7 +2,7 @@
  * OTLP export: traces and logs, over HTTP/JSON, with no SDK.
  *
  * The OpenTelemetry JS SDK exists and is not used here. A tick is a
- * short-lived process (ADR-001) that runs for a second and exits, so the parts
+ * short-lived process that runs for a second and exits, so the parts
  * of the SDK that earn their weight — batch processors, periodic readers,
  * background flush — are the parts that would have to be defeated. What is
  * left is a JSON body and a POST, which `fetch` already does.

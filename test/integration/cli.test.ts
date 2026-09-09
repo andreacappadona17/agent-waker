@@ -513,7 +513,7 @@ describe("telemetry", () => {
     await invoke(["tick"], { now: at("05:00") });
 
     // A minute-level scheduler cannot afford a connection attempt per tick,
-    // and a no-op has nothing to say (ARCHITECTURE §34).
+    // and a no-op has nothing to say.
     expect(received).toEqual([]);
   });
 

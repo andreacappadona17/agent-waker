@@ -1,7 +1,7 @@
 /**
  * What an adapter reports about a provider.
  *
- * Adapters describe facts, not decisions (ADR-004): "blocked, rolling window,
+ * Adapters describe facts, not decisions: "blocked, rolling window,
  * resets at 08:23", never "retry in ten minutes". Everything a provider says
  * arrives here, and the core alone decides what to do about it.
  */

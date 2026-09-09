@@ -145,7 +145,7 @@ export function nextCycleAt(
  * The cycle turns over at `notBefore`, not at midnight, so the hours between
  * are still part of the previous day's cycle.
  *
- * A cycle that did not finish is not carried forward. ADR-008: a warmup has no
+ * A cycle that did not finish is not carried forward: a warmup has no
  * value once a newer one is due, so an unfinished cycle collapses into today's
  * rather than queueing behind it. The exceptions are the two waits that are
  * still telling the truth — a known reset that has not yet passed, and a
