@@ -66,11 +66,16 @@ jobs:
       - name: Generate CycloneDX SBOM
         run: pnpm run sbom
 
-      - name: Attach the SBOM to the release
+      # release-please creates the release as a draft, so its assets stay
+      # mutable: an immutable release rejects uploads once published. Attach
+      # the SBOM while the release is still a draft, then publish it.
+      - name: Attach the SBOM, then publish the release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG: ${{ needs.prepare.outputs.tag }}
-        run: gh release upload "$TAG" sbom.cdx.json --clobber
+        run: |
+          gh release upload "$TAG" sbom.cdx.json --clobber
+          gh release edit "$TAG" --draft=false
 
   publish:
     name: Publish to npm
