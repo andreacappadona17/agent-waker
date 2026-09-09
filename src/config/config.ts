@@ -74,7 +74,6 @@ export interface AgentWakerConfig {
     readonly longTerm: { readonly intervalMs: number };
     readonly transient: { readonly delaysMs: readonly number[] };
   };
-  readonly runtime: { readonly local: { readonly tickIntervalMs: number } };
   readonly logging: { readonly level: LogLevel };
   /**
    * OTLP export, absent unless an endpoint is configured.
@@ -574,16 +573,6 @@ export function parseConfig(source: string, file: string): AgentWakerConfig {
           DEFAULT_TRANSIENT_DELAYS_MS,
       },
     },
-    runtime: {
-      local: {
-        tickIntervalMs:
-          optional(
-            src,
-            ["runtime", "local", "tickInterval"],
-            parsePositiveDuration,
-          ) ?? DEFAULT_TICK_INTERVAL_MS,
-      },
-    },
     logging: {
       level:
         optional(src, ["logging", "level"], parseLogLevel) ?? DEFAULT_LOG_LEVEL,
@@ -591,6 +580,18 @@ export function parseConfig(source: string, file: string): AgentWakerConfig {
     ...(telemetry === undefined ? {} : { telemetry }),
     agents: (rejectUnknownAgents(src), readAgents(src)),
   };
+
+  // Preserve existing default-valued files, but reject a setting the scheduler
+  // cannot honor instead of exposing an unused runtime configuration field.
+  const intervalPath = ["runtime", "local", "tickInterval"];
+  const interval = optional(src, intervalPath, parsePositiveDuration);
+  if (interval !== undefined && interval !== DEFAULT_TICK_INTERVAL_MS) {
+    fail(
+      src,
+      intervalPath,
+      "tickInterval must be 60s; other intervals are not supported.",
+    );
+  }
 
   // v0.1 has no defined behaviour past the end of the ladder, so the key is
   // read and refused rather than accepted and ignored.

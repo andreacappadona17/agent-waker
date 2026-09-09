@@ -8,7 +8,11 @@
 
 import { AGENT_IDS, type AgentId } from "#src/core/agent.js";
 import type { EffectiveAgentConfig } from "#src/config/config.js";
-import { DAY_MS, localDateAt, resolveLocalTime } from "#src/core/time.js";
+import {
+  localDateAt,
+  nextLocalDate,
+  resolveLocalTime,
+} from "#src/core/time.js";
 import type { Instant, LocalDate } from "#src/core/time.js";
 
 /**
@@ -114,9 +118,7 @@ export function cycleStartAt(
  * an agent whose recorded cycle is not today's is still owed one today, even
  * when its phase still says `activated` because no tick has rolled it yet.
  *
- * "Tomorrow" is anchored to the day's opening rather than to `now`. On a
- * 25-hour fall-back day, `now + 24h` is still the same local date for the
- * first hour, and tomorrow would resolve to today.
+ * Tomorrow advances the calendar date: a local day can last 25 hours.
  */
 export function nextCycleAt(
   config: EffectiveAgentConfig,
@@ -128,7 +130,13 @@ export function nextCycleAt(
     state.phase === "activated" &&
     state.cycleDate === localDateAt(now, config.timezone);
 
-  return doneToday ? cycleStartAt(config, opens + DAY_MS) : opens;
+  return doneToday
+    ? resolveLocalTime(
+        nextLocalDate(localDateAt(now, config.timezone)),
+        config.notBefore,
+        config.timezone,
+      )
+    : opens;
 }
 
 /**

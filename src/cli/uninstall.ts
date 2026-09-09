@@ -9,14 +9,14 @@
  * whenever there is somebody to ask.
  */
 
-import { rm } from "node:fs/promises";
-import { join } from "node:path";
+import { realpath, rm, rmdir } from "node:fs/promises";
+import { isAbsolute, join, relative } from "node:path";
 
 import { schedulerFor, type CommandContext } from "#src/cli/context.js";
 import { EXIT, type ExitCode } from "#src/cli/exit.js";
 
 /** Everything the state directory holds apart from the logs. */
-const STATE_FILES = ["state.json", "state.json.bak", "lock"];
+const STATE_FILES = ["state.json", "state.json.bak"];
 
 export interface UninstallOptions {
   /** Logs are kept by default: they are the record of what happened. */
@@ -62,30 +62,38 @@ export async function uninstallCommand(
     return EXIT.ok;
   }
 
-  await schedulerFor(context)
-    .uninstall()
-    // The files still go: a scheduler entry pointing at nothing is worse than
-    // one that was cleanly removed, and doctor would have flagged it anyway.
-    .catch(() => undefined);
+  await context.store.withLock(async () => {
+    const nested = relative(
+      await realpath(paths.workDir),
+      await realpath(paths.stateDir),
+    );
+    if (nested !== ".." && !nested.startsWith("../") && !isAbsolute(nested)) {
+      throw new Error(
+        "Cannot remove cached working files: the state directory is inside them. Move the state directory before uninstalling.",
+      );
+    }
 
-  if (options.includeLogs) {
-    await rm(paths.logDir, { recursive: true, force: true });
-  }
+    await schedulerFor(context)
+      .uninstall()
+      .catch(() => undefined);
 
-  // The log directory sits inside the state directory, so the state files are
-  // removed by name rather than by wiping the parent. Removing the parent is
-  // then attempted and simply fails while the logs are still in it.
-  for (const name of STATE_FILES) {
-    await rm(join(paths.stateDir, name), { force: true });
-  }
+    if (options.includeLogs) {
+      await rm(paths.logDir, { recursive: true, force: true });
+    }
 
-  await rm(paths.stateDir, {
-    recursive: options.includeLogs,
-    force: true,
-  }).catch(() => undefined);
+    for (const name of STATE_FILES) {
+      await rm(join(paths.stateDir, name), { force: true });
+    }
 
-  await rm(paths.configDir, { recursive: true, force: true });
-  await rm(paths.cacheDir, { recursive: true, force: true });
+    // Keep the lock inode and its directory. Unlinking it would let another
+    // process create a different file and bypass locks held by existing openers.
+    await rm(paths.config, { force: true });
+    await rm(`${paths.config}.bak`, { force: true });
+    await rm(paths.workDir, { recursive: true, force: true });
+    // XDG roots can coincide. Remove only owned files, then empty directories.
+    await rmdir(paths.configDir).catch(() => undefined);
+    await rmdir(paths.cacheDir).catch(() => undefined);
+  });
 
   environment.write("agent waker removed.\n");
 

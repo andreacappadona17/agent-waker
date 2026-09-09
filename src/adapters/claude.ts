@@ -22,7 +22,11 @@ import type {
   DetectionResult,
 } from "#src/adapters/contract.js";
 import type { AgentObservation } from "#src/core/observation.js";
-import { missingFlags, toDetection } from "#src/adapters/detection.js";
+import {
+  missingFlags,
+  processFailure,
+  toDetection,
+} from "#src/adapters/detection.js";
 import { discoverExecutable } from "#src/process/discovery.js";
 import { TIMEOUTS, type ProcessResult } from "#src/process/runner.js";
 
@@ -121,25 +125,6 @@ export function parseAuthStatus(result: ProcessResult): AuthResult {
     supportsIntent: false,
     message: `Signed in with ${String(authMethod)} via ${String(apiProvider)}, which cannot be used for subscription activation.`,
   };
-}
-
-/** Maps a process that never really ran onto the runtime vocabulary. */
-function processFailure(result: ProcessResult): AgentObservation | undefined {
-  if (result.timedOut) {
-    return { kind: "runtime_error", category: "timeout" };
-  }
-
-  switch (result.startFailure) {
-    case undefined:
-      return undefined;
-    case "ENOENT":
-      return { kind: "runtime_error", category: "executable_missing" };
-    case "ENOEXEC":
-    case "EACCES":
-      return { kind: "runtime_error", category: "broken_install" };
-    default:
-      return { kind: "runtime_error", category: "unknown" };
-  }
 }
 
 /**

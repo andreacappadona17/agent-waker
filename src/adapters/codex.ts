@@ -20,7 +20,11 @@ import type {
   AuthResult,
   DetectionResult,
 } from "#src/adapters/contract.js";
-import { missingFlags, toDetection } from "#src/adapters/detection.js";
+import {
+  missingFlags,
+  processFailure,
+  toDetection,
+} from "#src/adapters/detection.js";
 import type { AgentObservation } from "#src/core/observation.js";
 import { discoverExecutable } from "#src/process/discovery.js";
 import { TIMEOUTS, type ProcessResult } from "#src/process/runner.js";
@@ -120,6 +124,9 @@ function messagesFrom(stdout: string): string[] {
       continue;
     }
 
+    if (typeof event !== "object" || event === null || Array.isArray(event))
+      continue;
+
     const record = event as {
       message?: unknown;
       error?: { message?: unknown };
@@ -130,22 +137,6 @@ function messagesFrom(stdout: string): string[] {
   }
 
   return messages;
-}
-
-function processFailure(result: ProcessResult): AgentObservation | undefined {
-  if (result.timedOut) return { kind: "runtime_error", category: "timeout" };
-
-  switch (result.startFailure) {
-    case undefined:
-      return undefined;
-    case "ENOENT":
-      return { kind: "runtime_error", category: "executable_missing" };
-    case "ENOEXEC":
-    case "EACCES":
-      return { kind: "runtime_error", category: "broken_install" };
-    default:
-      return { kind: "runtime_error", category: "unknown" };
-  }
 }
 
 /** Reads the outcome of `codex exec --json`. */
