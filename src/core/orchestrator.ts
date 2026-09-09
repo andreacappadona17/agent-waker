@@ -1,7 +1,7 @@
 /**
  * One pass of the scheduler.
  *
- * A tick is a short-lived process (ADR-001), so this is the whole program's
+ * A tick is a short-lived process, so this is the whole program's
  * main loop: read the clock once, load state, work out which agents are due,
  * ask their adapters what the provider says, and write down what to do next.
  *
@@ -101,7 +101,7 @@ export interface TickResult {
   /**
    * Whether the tick said anything above `debug`.
    *
-   * A no-op tick is silent by design (ARCHITECTURE §34); this is how a caller
+   * A no-op tick is silent by design; this is how a caller
    * tells that apart from a tick worth reporting, without re-deriving the rule
    * from the outcomes.
    */
@@ -150,7 +150,7 @@ function observeAuth(auth: AuthResult): AgentObservation | undefined {
  * Wraps a runner so every provider call becomes a span and an exit code.
  *
  * The adapter contract deliberately has no place for either: an adapter
- * reports what a provider said, not how it was invoked (ADR-004). They are
+ * reports what a provider said, not how it was invoked. They are
  * still the two fields an operator asks for first when an activation is slow
  * or a wrapper is broken, so they are taken here, where the process actually
  * starts, rather than pushed into the contract.
@@ -337,8 +337,8 @@ export async function tick(
 
     // Every cycle rolls before anything is said, so the tick knows whether it
     // is a no-op before it announces itself. A minute-level scheduler that
-    // logs at `info` every minute drowns the log it exists to write
-    // (ARCHITECTURE §34). Rolling is pure, so this costs nothing.
+    // logs at `info` every minute drowns the log it exists to write.
+    // Rolling is pure, so this costs nothing.
     for (const { agentId, rolled } of plan) agents[agentId] = rolled;
 
     const evaluated = plan.filter((entry) => entry.skipped === undefined);

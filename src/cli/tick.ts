@@ -59,7 +59,7 @@ export async function runTick(
     );
 
     // A tick that said nothing to the event log has nothing to say to a
-    // collector either (ARCHITECTURE §34), and skipping the export keeps the
+    // collector either, and skipping the export keeps the
     // common case off the network: on a minute-level schedule an unreachable
     // collector would otherwise cost a connection attempt every minute. Driven
     // by what was actually emitted rather than by whether an agent ran, so a
