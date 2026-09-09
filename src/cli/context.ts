@@ -28,11 +28,8 @@ import {
   createProcessRunner,
   type ProcessRunner,
 } from "#src/process/runner.js";
-import {
-  createLaunchdScheduler,
-  LAUNCHER_NAME,
-  type SchedulerDriver,
-} from "#src/schedulers/launchd.js";
+import type { SchedulerDriver } from "#src/schedulers/contract.js";
+import { createScheduler } from "#src/schedulers/select.js";
 import { createStateStore, type StateStore } from "#src/state/store.js";
 import {
   createTelemetry,
@@ -92,11 +89,12 @@ export class NotInitialisedError extends Error {
 
 /** The scheduler driver, wired to this machine's resolved paths. */
 export function schedulerFor(context: CommandContext): SchedulerDriver {
-  return createLaunchdScheduler({
+  return createScheduler({
+    platform: context.environment.platform,
     runner: context.runner,
     home: context.environment.home,
     uid: context.environment.uid,
-    launcherPath: join(context.paths.launcherDir, LAUNCHER_NAME),
+    launcherDir: context.paths.launcherDir,
   });
 }
 

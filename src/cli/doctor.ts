@@ -150,7 +150,7 @@ async function schedulerSection(context: CommandContext): Promise<Section> {
     checks.push({
       name: "scheduler is installed",
       outcome: "pass",
-      evidence: scheduler.plistPath,
+      evidence: scheduler.jobPath,
     });
     checks.push({
       name: scheduler.loaded

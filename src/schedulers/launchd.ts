@@ -17,6 +17,11 @@ import { chmod, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 
 import { TIMEOUTS, type ProcessRunner } from "#src/process/runner.js";
+import type {
+  SchedulerDriver,
+  SchedulerInstallConfig,
+  SchedulerStatus,
+} from "#src/schedulers/contract.js";
 
 /** The launcher's file name; its directory follows XDG like everything else. */
 export const LAUNCHER_NAME = "agent-waker-runner";
@@ -32,38 +37,6 @@ const LAUNCHCTL_NO_SUCH_PROCESS = 113;
 
 const PLIST_MODE = 0o644;
 const LAUNCHER_MODE = 0o755;
-
-export interface LaunchdInstallConfig {
-  /** Resolved at installation, since launchd does not inherit shell settings. */
-  readonly xdg?: Readonly<
-    Record<
-      "XDG_CONFIG_HOME" | "XDG_STATE_HOME" | "XDG_CACHE_HOME" | "XDG_DATA_HOME",
-      string
-    >
-  >;
-  /** The interpreter to run, as it exists right now. */
-  readonly nodePath: string;
-  /** The agent waker entry point, as it exists right now. */
-  readonly entrypoint: string;
-  readonly intervalSeconds: number;
-  readonly logDirectory: string;
-}
-
-export interface SchedulerStatus {
-  readonly installed: boolean;
-  readonly loaded: boolean;
-  readonly plistPath: string;
-  readonly launcherPath: string;
-  /** True when the plist names a launcher that is no longer there. */
-  readonly stalePath: boolean;
-  readonly intervalSeconds?: number;
-}
-
-export interface SchedulerDriver {
-  install(config: LaunchdInstallConfig): Promise<void>;
-  inspect(): Promise<SchedulerStatus>;
-  uninstall(): Promise<void>;
-}
 
 export interface LaunchdOptions {
   readonly runner: ProcessRunner;
@@ -144,7 +117,7 @@ function shellQuote(value: string): string {
  * it says which path is missing and exits with a code that means "the
  * configuration is wrong", rather than looking like a provider failure.
  */
-export function renderLauncher(config: LaunchdInstallConfig): string {
+export function renderLauncher(config: SchedulerInstallConfig): string {
   const node = shellQuote(config.nodePath);
   const entry = shellQuote(config.entrypoint);
   const xdg = Object.entries(config.xdg ?? {})
@@ -205,7 +178,7 @@ export function createLaunchdScheduler(
     readFile(plistPath, "utf8").catch(() => undefined);
 
   return {
-    async install(config: LaunchdInstallConfig): Promise<void> {
+    async install(config: SchedulerInstallConfig): Promise<void> {
       await mkdir(dirname(launcherPath), { recursive: true });
       await writeFile(launcherPath, renderLauncher(config), "utf8");
       await chmod(launcherPath, LAUNCHER_MODE);
@@ -258,7 +231,7 @@ export function createLaunchdScheduler(
           installed: false,
           loaded: false,
           stalePath: false,
-          plistPath,
+          jobPath: plistPath,
           launcherPath,
         };
       }
@@ -279,7 +252,7 @@ export function createLaunchdScheduler(
         installed: true,
         loaded: printed.exitCode === 0,
         stalePath: !launcherPresent,
-        plistPath,
+        jobPath: plistPath,
         launcherPath,
         ...(interval === undefined
           ? {}
