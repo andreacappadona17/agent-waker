@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.2](https://github.com/andreacappadona17/agent-waker/compare/agent-waker-v0.3.1...agent-waker-v0.3.2) (2026-09-09)
+
+
+### Bug Fixes
+
+* **release:** attach the SBOM to a draft so immutable releases accept it ([#6](https://github.com/andreacappadona17/agent-waker/issues/6)) ([f2cd13f](https://github.com/andreacappadona17/agent-waker/commit/f2cd13f27c1a3b6b6b4601f729ae8faa585ffeba))
+
 ## [0.3.1](https://github.com/andreacappadona17/agent-waker/compare/agent-waker-v0.3.0...agent-waker-v0.3.1) (2026-09-09)
 
 
