@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.3.1](https://github.com/andreacappadona17/agent-waker/compare/agent-waker-v0.3.0...agent-waker-v0.3.1) (2026-09-09)
+
+
+### Bug Fixes
+
+* harden scheduler locking and activation persistence ([#5](https://github.com/andreacappadona17/agent-waker/issues/5)) ([75e222c](https://github.com/andreacappadona17/agent-waker/commit/75e222cfa393a5f012a377f1be936a718a40b823))
+* report the earliest enabled agent's window from init ([dbff318](https://github.com/andreacappadona17/agent-waker/commit/dbff31840a451d76a12c11514f80f5aaeacaf778))
+
 ## [0.3.0](https://github.com/andreacappadona17/agent-waker/compare/agent-waker-v0.2.1...agent-waker-v0.3.0) (2026-09-07)
 
 
