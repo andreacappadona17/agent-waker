@@ -30,7 +30,7 @@ export interface SchedulerStatus {
   readonly installed: boolean;
   readonly loaded: boolean;
   /** The scheduler's own job file: a plist on macOS, a unit on Linux. */
-  readonly plistPath: string;
+  readonly jobPath: string;
   readonly launcherPath: string;
   /** True when the job names a launcher that is no longer there. */
   readonly stalePath: boolean;

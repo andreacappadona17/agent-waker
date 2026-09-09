@@ -231,7 +231,7 @@ export function createLaunchdScheduler(
           installed: false,
           loaded: false,
           stalePath: false,
-          plistPath,
+          jobPath: plistPath,
           launcherPath,
         };
       }
@@ -252,7 +252,7 @@ export function createLaunchdScheduler(
         installed: true,
         loaded: printed.exitCode === 0,
         stalePath: !launcherPresent,
-        plistPath,
+        jobPath: plistPath,
         launcherPath,
         ...(interval === undefined
           ? {}
