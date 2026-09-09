@@ -1,6 +1,6 @@
 {
   "name": "@andreacappadona17/agent-waker",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "Align coding-agent subscription windows with when you work.",
   "keywords": [
     "cli",
