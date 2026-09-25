@@ -675,7 +675,32 @@ describe("telemetry", () => {
       "agent_waker.runtime": "local",
       "agent_waker.forced": false,
       "agent_waker.agents_evaluated": 2,
+      "agent_waker.state_recovery_count": 0,
     });
+  });
+
+  it("distinguishes provider-stated resets from backoff guesses", async () => {
+    const test = harness({
+      claude: { probe: [blockedWith(at("08:23"))] },
+      codex: { probe: [blockedWith(undefined)] },
+    });
+
+    await test.run(at("07:00"));
+
+    const blocked = test.telemetry.spans.filter(
+      (span) =>
+        span.name === "agent.activation" &&
+        span.attributes["agent.observation"] === "blocked",
+    );
+
+    expect(
+      blocked.find((span) => span.attributes["agent.id"] === "claude")
+        ?.attributes.reset_source,
+    ).toBe("stated");
+    expect(
+      blocked.find((span) => span.attributes["agent.id"] === "codex")
+        ?.attributes.reset_source,
+    ).toBe("guessed");
   });
 
   it("puts the provider's exit code and duration on the span", async () => {
@@ -818,6 +843,31 @@ describe("telemetry", () => {
       true,
     );
     expect(result.notable).toBe(true);
+    expect(
+      test.telemetry.spans
+        .filter((span) => span.name === "agent_waker.tick")
+        .at(-1)?.attributes["agent_waker.state_recovery_count"],
+    ).toBe(1);
+  });
+
+  it("counts a state reset when both state copies are corrupt", async () => {
+    const test = harness();
+
+    await test.run(at("07:00"));
+    await writeFile(join(directory, "state", "state.json"), "broken", "utf8");
+    await writeFile(
+      join(directory, "state", "state.json.bak"),
+      "also broken",
+      "utf8",
+    );
+
+    await test.run(at("23:00"));
+
+    expect(
+      test.telemetry.spans
+        .filter((span) => span.name === "agent_waker.tick")
+        .at(-1)?.attributes["agent_waker.state_recovery_count"],
+    ).toBe(1);
   });
 
   it("traces a tick where nothing is due", async () => {
@@ -828,6 +878,7 @@ describe("telemetry", () => {
     expect(spanNames(test)).toEqual(["agent_waker.tick"]);
     expect(named(test, "agent_waker.tick")?.attributes).toMatchObject({
       "agent_waker.agents_evaluated": 0,
+      "agent_waker.state_recovery_count": 0,
     });
   });
 

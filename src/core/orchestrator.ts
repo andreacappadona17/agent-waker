@@ -28,6 +28,7 @@ import {
 } from "#src/config/config.js";
 import { AGENT_IDS, type AgentId } from "#src/core/agent.js";
 import type { AgentObservation } from "#src/core/observation.js";
+import { effectiveReset } from "#src/core/policy/retry.js";
 import { applyObservation, isDue } from "#src/core/policy/transition.js";
 import {
   needsAttention,
@@ -428,6 +429,14 @@ export async function tick(
         attributes: {
           "agent.phase": next.phase,
           "agent.observation": observation.kind,
+          ...(observation.kind === "blocked"
+            ? {
+                reset_source:
+                  effectiveReset(observation.constraints) === undefined
+                    ? "guessed"
+                    : "stated",
+              }
+            : {}),
           "agent.duration_ms": durationMs,
           "agent.reason": next.reason,
           "agent.next_attempt_at":
@@ -446,7 +455,11 @@ export async function tick(
 
     if (evaluated.length === 0) await store.save(saved);
     root.end({
-      attributes: { "agent_waker.agents_evaluated": evaluated.length },
+      attributes: {
+        "agent_waker.agents_evaluated": evaluated.length,
+        "agent_waker.state_recovery_count":
+          loaded.source === "backup" || loaded.source === "reset" ? 1 : 0,
+      },
     });
 
     return { at: now, agents: outcomes, notable };
