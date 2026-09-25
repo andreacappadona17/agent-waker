@@ -100,9 +100,29 @@ than widening the rules.
 
 ## Adding an agent adapter
 
-The most natural contribution, but not open yet: the contract an adapter
-implements has not been built. If you want a particular agent supported, open an
-issue now so the contract can account for it.
+Implement [`AgentAdapter`](src/adapters/contract.ts), add the agent to
+[`AGENT_IDS`](src/core/agent.ts), and register it in
+[`defaultRegistry`](src/cli/context.ts). Adapters report facts; the scheduler
+owns retry decisions.
+
+Add sanitized provider responses and command arguments to
+[`conformance.test.ts`](test/unit/adapters/conformance.test.ts). Its shared
+[conformance suite](test/support/adapter-conformance.ts) runs over every
+registered adapter, and fails if an adapter has no fixtures. It checks detection,
+auth classification, usage Blocks, quota-free smoke tests, and activation in an
+empty working directory. Executable discovery is mocked at its shared boundary;
+the process runner records commands and never starts a provider.
+
+Supply both Block cases: with an exact reset and without one. If the provider
+does not supply an unambiguous timestamp, record the reason in
+`blockedWithReset.unsupported`; the test output explicitly marks that case
+skipped. Never invent a reset. Known-reset scheduling is covered separately with
+the fake adapter in [`tick.test.ts`](test/integration/tick.test.ts).
+
+Use captured help output, not a synthetic list of flags: the suite renames each
+activation flag in turn and requires the smoke test to catch it without an
+activation. Keep provider-specific parser and containment tests alongside the
+shared suite, and run `pnpm verify` before submitting an adapter.
 
 ## Commits and releases
 
