@@ -8,23 +8,10 @@
  * to guarantee than to configure.
  */
 
-import {
-  isConfigurationProblem,
-  openContext,
-  type CliEnvironment,
-} from "#src/cli/context.js";
-import { detectCommand } from "#src/cli/detect.js";
-import { initCommand, repairCommand } from "#src/cli/init.js";
-import { uninstallCommand } from "#src/cli/uninstall.js";
-import { doctorCommand } from "#src/cli/doctor.js";
 import { EXIT, type ExitCode } from "#src/cli/exit.js";
-import { platformName } from "#src/cli/format.js";
-import { logsCommand } from "#src/cli/logs.js";
-import { runCommand } from "#src/cli/run.js";
-import { scheduleSetCommand, setEnabledCommand } from "#src/cli/schedule.js";
-import { statusCommand } from "#src/cli/status.js";
-import { tickCommand } from "#src/cli/tick.js";
 import { asAgents, type AgentId } from "#src/core/agent.js";
+
+import type { CliEnvironment } from "#src/cli/context.js";
 
 const USAGE = `agent waker — align coding-agent subscription windows with when you work.
 
@@ -67,7 +54,7 @@ Exit codes:
 
 /** Why there is nothing to do here. */
 const unsupportedPlatform = (platform: string): string =>
-  `agent waker runs on macOS, and this is ${platformName(platform)}.
+  `agent waker runs on macOS, and this is ${platform}.
 Scheduling needs a launchd agent, which only macOS has. Linux support is
 planned and not in this build.
 `;
@@ -196,7 +183,10 @@ export async function run(environment: CliEnvironment): Promise<ExitCode> {
   // Before anything reads a file. `help` and `--version` are answered above,
   // because a user asking what this is deserves an answer wherever they are.
   if (environment.platform !== "darwin") {
-    environment.writeError(unsupportedPlatform(environment.platform));
+    const { platformName } = await import("#src/cli/format.js");
+    environment.writeError(
+      unsupportedPlatform(platformName(environment.platform)),
+    );
 
     return EXIT.unsupported;
   }
@@ -241,16 +231,24 @@ export async function run(environment: CliEnvironment): Promise<ExitCode> {
     parsed.command === "init" || parsed.command === "uninstall";
 
   try {
+    const { openContext } = await import("#src/cli/context.js");
     const context = await openContext(environment, { allowMissingConfig });
 
     switch (parsed.command) {
-      case "status":
+      case "status": {
+        const { statusCommand } = await import("#src/cli/status.js");
         return await statusCommand(context);
-      case "detect":
+      }
+      case "detect": {
+        const { detectCommand } = await import("#src/cli/detect.js");
         return await detectCommand(context);
-      case "doctor":
+      }
+      case "doctor": {
+        const { doctorCommand } = await import("#src/cli/doctor.js");
         return await doctorCommand(context, agents);
-      case "init":
+      }
+      case "init": {
+        const { initCommand, repairCommand } = await import("#src/cli/init.js");
         return parsed.flags.has("--repair")
           ? await repairCommand(context)
           : await initCommand(context, {
@@ -258,16 +256,23 @@ export async function run(environment: CliEnvironment): Promise<ExitCode> {
               ...toOption("timezone", parsed.options.get("--timezone")),
               ...toOption("agents", parsed.options.get("--agents")),
             });
-      case "uninstall":
+      }
+      case "uninstall": {
+        const { uninstallCommand } = await import("#src/cli/uninstall.js");
         return await uninstallCommand(context, {
           includeLogs: parsed.flags.has("--logs"),
           assumeYes: parsed.flags.has("-y") || parsed.flags.has("--yes"),
         });
-      case "tick":
+      }
+      case "tick": {
+        const { tickCommand } = await import("#src/cli/tick.js");
         return await tickCommand(context);
-      case "run":
+      }
+      case "run": {
+        const { runCommand } = await import("#src/cli/run.js");
         // Evaluate now, but still respect what the provider says.
         return await runCommand(context, agents);
+      }
       case "logs": {
         const limit = Number(parsed.options.get("--limit") ?? 40);
 
@@ -277,6 +282,7 @@ export async function run(environment: CliEnvironment): Promise<ExitCode> {
           return EXIT.usage;
         }
 
+        const { logsCommand } = await import("#src/cli/logs.js");
         return await logsCommand(context, {
           limit,
           agents,
@@ -294,6 +300,7 @@ export async function run(environment: CliEnvironment): Promise<ExitCode> {
           return EXIT.usage;
         }
 
+        const { scheduleSetCommand } = await import("#src/cli/schedule.js");
         return await scheduleSetCommand(
           context,
           time,
@@ -301,18 +308,21 @@ export async function run(environment: CliEnvironment): Promise<ExitCode> {
         );
       }
       case "enable":
-      case "disable":
+      case "disable": {
+        const { setEnabledCommand } = await import("#src/cli/schedule.js");
         return await setEnabledCommand(
           context,
           agents,
           parsed.command === "enable",
         );
+      }
       default:
         return EXIT.usage;
     }
   } catch (error) {
     environment.writeError(`${(error as Error).message}\n`);
 
+    const { isConfigurationProblem } = await import("#src/cli/context.js");
     return isConfigurationProblem(error) ? EXIT.usage : EXIT.failed;
   }
 }

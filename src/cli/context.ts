@@ -31,11 +31,19 @@ import {
 import type { SchedulerDriver } from "#src/schedulers/contract.js";
 import { createScheduler } from "#src/schedulers/select.js";
 import { createStateStore, type StateStore } from "#src/state/store.js";
-import {
-  createTelemetry,
-  NO_TELEMETRY,
-  type Telemetry,
-} from "#src/telemetry/otlp.js";
+import type { Telemetry } from "#src/telemetry/otlp.js";
+
+const NOOP_SPAN: ReturnType<Telemetry["span"]> = {
+  span: () => NOOP_SPAN,
+  log: () => undefined,
+  end: () => undefined,
+};
+
+const NO_TELEMETRY: Telemetry = {
+  span: () => NOOP_SPAN,
+  log: () => undefined,
+  flush: () => Promise.resolve(undefined),
+};
 
 /** Everything the process supplies, gathered so tests can supply it instead. */
 export interface CliEnvironment {
@@ -145,6 +153,18 @@ export async function openContext(
   // own token is named to it explicitly.
   const telemetrySecrets = Object.values(config.telemetry?.headers ?? {});
 
+  const telemetryConfig = config.telemetry;
+  const telemetry =
+    telemetryConfig === undefined
+      ? NO_TELEMETRY
+      : await import("#src/telemetry/otlp.js").then(({ createTelemetry }) =>
+          createTelemetry({
+            ...telemetryConfig,
+            env: environment.env,
+            secrets: telemetrySecrets,
+          }),
+        );
+
   return {
     environment,
     paths,
@@ -157,14 +177,7 @@ export async function openContext(
       env: environment.env,
       secrets: telemetrySecrets,
     }),
-    telemetry:
-      config.telemetry === undefined
-        ? NO_TELEMETRY
-        : createTelemetry({
-            ...config.telemetry,
-            env: environment.env,
-            secrets: telemetrySecrets,
-          }),
+    telemetry,
     registry: environment.registry ?? defaultRegistry(),
     runner: environment.runner ?? createProcessRunner({ env: environment.env }),
   };
