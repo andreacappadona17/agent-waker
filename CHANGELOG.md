@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.4.0](https://github.com/andreacappadona17/agent-waker/compare/agent-waker-v0.3.2...agent-waker-v0.4.0) (2026-09-25)
+
+
+### Features
+
+* **telemetry:** report reset source and state recovery ([#29](https://github.com/andreacappadona17/agent-waker/issues/29)) ([5611b8c](https://github.com/andreacappadona17/agent-waker/commit/5611b8c3e8a12ace00adae970a2713d266b94105))
+
+
+### Performance Improvements
+
+* trim per-tick startup cost ([#32](https://github.com/andreacappadona17/agent-waker/issues/32)) ([9c750f0](https://github.com/andreacappadona17/agent-waker/commit/9c750f0c9ee04b49852b0b7b140c71429791bb88))
+
 ## [0.3.2](https://github.com/andreacappadona17/agent-waker/compare/agent-waker-v0.3.1...agent-waker-v0.3.2) (2026-09-09)
 
 
