@@ -20,6 +20,7 @@
  */
 
 import { randomBytes } from "node:crypto";
+import { connect } from "node:net";
 
 import type { Event, LogLevel } from "#src/logging/log.js";
 import {
@@ -113,6 +114,39 @@ export interface TelemetryOptions {
   readonly fetch?: (url: string, init: RequestInit) => Promise<Response>;
 }
 
+// Node's fetch aborts at timeoutMs, but an aborted undici TCP connect can keep
+// the event loop alive for its own 10s timeout. Probe first with an unref'd
+// socket so an unreachable collector is abandoned before fetch is started.
+async function connectToCollector(
+  url: string,
+  timeoutMs: number,
+): Promise<void> {
+  const target = new URL(url);
+  const port = Number(target.port || (target.protocol === "https:" ? 443 : 80));
+
+  await new Promise<void>((resolve, reject) => {
+    const socket = connect({
+      host: target.hostname.replace(/^\[|\]$/g, ""),
+      port,
+    });
+    socket.unref();
+    const timer = setTimeout(() => {
+      socket.destroy();
+      reject(new Error(`connection timed out after ${String(timeoutMs)}ms`));
+    }, timeoutMs);
+
+    socket.once("connect", () => {
+      clearTimeout(timer);
+      socket.destroy();
+      resolve();
+    });
+    socket.once("error", (error) => {
+      clearTimeout(timer);
+      reject(error);
+    });
+  });
+}
+
 /** OTLP carries 64-bit times as nanosecond strings. */
 function nanos(milliseconds: number): string {
   return `${String(Math.trunc(milliseconds))}000000`;
@@ -197,6 +231,7 @@ export function createTelemetry(options: TelemetryOptions): Telemetry {
     now = Date.now,
     fetch: send = globalThis.fetch,
   } = options;
+  const shouldPreflight = options.fetch === undefined;
 
   const secrets = [...secretsFromEnv(env), ...extraSecrets];
   // One trace per process. A tick is the unit of work, so this is the unit of
@@ -264,19 +299,8 @@ export function createTelemetry(options: TelemetryOptions): Telemetry {
     };
   };
 
-  // ponytail: `timeoutMs` bounds how long `flush` waits, not how long the
-  // process lives. `AbortSignal.timeout` abandons the request on schedule but
-  // does not tear down undici's pending TCP connect, which holds the event loop
-  // until its own 10s connectTimeout: measured on Node 24.14.0, a blackholed
-  // collector (SYN dropped, not refused) rejects at `timeoutMs` and then exits
-  // at ~10.5s whatever this is set to. Only ticks with something to export pay
-  // it, and an idle process outliving its work by 10s of a 60s interval blocks
-  // nothing — the lock is long released and the failure is already logged.
-  // Nor is it the one-line fix this comment used to promise: `connect:
-  // { timeout }` needs an undici `Agent`, and Node exports no dispatcher, so
-  // the upgrade is a runtime dependency, or an unref'd `net.connect` pre-flight
-  // ahead of the POST. Take one if a tick ever has to be dead before the next
-  // one starts.
+  // ponytail: the preflight adds a TCP connect per export; use an undici Agent
+  // if that cost matters, since Node's fetch exposes no connect-timeout knob.
   const post = async (
     path: string,
     body: unknown,
@@ -284,6 +308,9 @@ export function createTelemetry(options: TelemetryOptions): Telemetry {
     const url = `${endpoint.replace(/\/+$/, "")}${path}`;
 
     try {
+      if (shouldPreflight) {
+        await connectToCollector(url, Math.min(timeoutMs, 2_000));
+      }
       const response = await send(url, {
         method: "POST",
         headers: { "content-type": "application/json", ...headers },
