@@ -336,6 +336,33 @@ describe("nextCycleAt", () => {
       expect(answer).toBe(utc("2026-10-26T06:00:00"));
       expect(answer).toBeGreaterThan(utc("2026-10-25T06:00:00"));
     });
+
+    it.each([
+      {
+        name: "spring-forward",
+        date: "2026-03-29",
+        before: utc("2026-03-29T04:59:59"),
+        opens: utc("2026-03-29T05:00:00"),
+        nextOpens: utc("2026-03-30T05:00:00"),
+      },
+      {
+        name: "fall-back",
+        date: "2026-10-25",
+        before: utc("2026-10-25T05:59:59"),
+        opens: utc("2026-10-25T06:00:00"),
+        nextOpens: utc("2026-10-26T06:00:00"),
+      },
+    ])("keeps $name openings on the local notBefore boundary", (day) => {
+      const completed: AgentState = {
+        phase: "activated",
+        cycleDate: day.date,
+      };
+
+      for (const now of [day.before, day.opens, day.opens + 1_000]) {
+        expect(nextCycleAt(config, idle, now)).toBe(day.opens);
+        expect(nextCycleAt(config, completed, now)).toBe(day.nextOpens);
+      }
+    });
   });
 });
 

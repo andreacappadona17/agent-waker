@@ -578,6 +578,34 @@ describe("run now", () => {
   });
 });
 
+describe("one activation per local day across DST", () => {
+  it.each([
+    {
+      name: "spring-forward",
+      previousOpen: utc("2026-03-28T06:00:00Z"),
+      beforeOpen: utc("2026-03-29T04:59:59Z"),
+      opens: utc("2026-03-29T05:00:00Z"),
+      afterOpen: utc("2026-03-29T05:00:01Z"),
+    },
+    {
+      name: "fall-back",
+      previousOpen: utc("2026-10-24T05:00:00Z"),
+      beforeOpen: utc("2026-10-25T05:59:59Z"),
+      opens: utc("2026-10-25T06:00:00Z"),
+      afterOpen: utc("2026-10-25T06:00:01Z"),
+    },
+  ])("does not activate twice through $name", async (day) => {
+    const test = harness();
+
+    await test.run(day.previousOpen, { only: ["claude"] });
+    await test.run(day.beforeOpen, { only: ["claude"], force: true });
+    await test.run(day.opens, { only: ["claude"] });
+    await test.run(day.afterOpen, { only: ["claude"], force: true });
+
+    expect(test.adapters.claude.calls.activate).toBe(2);
+  });
+});
+
 describe("persistence", () => {
   it("survives being restarted between ticks", async () => {
     const first = harness({ claude: { probe: [blockedWith(at("08:23"))] } });
