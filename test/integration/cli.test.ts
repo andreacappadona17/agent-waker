@@ -4,6 +4,7 @@ import {
   mkdir,
   mkdtemp,
   readFile,
+  readdir,
   rm,
   stat,
   symlink,
@@ -97,10 +98,12 @@ const invoke = async (
     isTty?: boolean;
     /** Answers for the prompts, in order; absent means nobody is there. */
     answers?: string[];
+    onAsk?: (question: string, output: string) => Promise<void>;
     runner?: ProcessRunner;
     platform?: string;
     execPath?: string;
     entrypoint?: string;
+    systemTimezone?: string;
   } = {},
 ): Promise<Invocation> => {
   let out = "";
@@ -115,15 +118,16 @@ const invoke = async (
     isTty: options.isTty ?? false,
     execPath: options.execPath ?? "/opt/node/bin/node",
     entrypoint: options.entrypoint ?? "/opt/agent-waker/dist/cli/bin.js",
-    systemTimezone: "Europe/Rome",
+    systemTimezone: options.systemTimezone ?? "Europe/Rome",
     now: () => options.now ?? at("09:00"),
     ...(options.answers === undefined
       ? {}
       : {
-          ask: (question: string, fallback: string): Promise<string> => {
+          ask: async (question: string, fallback: string): Promise<string> => {
             // As `bin.ts` renders it, so a test can assert the default the
             // user is actually shown.
             questions.push(`${question} (${fallback})`);
+            await options.onAsk?.(question, out);
 
             return Promise.resolve(options.answers?.shift() ?? fallback);
           },
@@ -992,6 +996,139 @@ describe("logs", () => {
 });
 
 describe("schedule set", () => {
+  it("rejects a missing option value before a following dry-run flag can be consumed", async () => {
+    await writeConfig();
+    const before = await configFile();
+
+    const result = await invoke([
+      "schedule",
+      "set",
+      "08:00",
+      "--time",
+      "--dry-run",
+    ]);
+
+    expect(result.code).toBe(EXIT.usage);
+    expect(result.err).toContain("--time needs a value");
+    expect(await configFile()).toBe(before);
+    expect(await readdir(join(home, ".config", "agent-waker"))).toEqual([
+      "config.yaml",
+    ]);
+    expect(await readdir(home)).toEqual([".config"]);
+  });
+
+  it("previews a per-agent schedule without writing configuration, backups or working directories", async () => {
+    await writeConfig(
+      "# mine\n" +
+        CONFIG +
+        'agents:\n  codex:\n    enabled: true\n    schedule:\n      notBefore: "08:00"\n',
+    );
+    const before = await configFile();
+    const result = await invoke(
+      ["schedule", "set", "06:45", "--agent", "claude", "--dry-run"],
+      { now: at("06:00") },
+    );
+
+    expect(result.code).toBe(EXIT.ok);
+    expect(result.out).toContain("Fake claude  enabled  06:45 Europe/Rome");
+    expect(result.out).toContain("Fake codex  enabled  08:00 Europe/Rome");
+    expect(result.out).toContain("today 06:45");
+    expect(result.out).toContain("Dry run: nothing written");
+    expect(await configFile()).toBe(before);
+    expect(await readdir(home)).toEqual([".config"]);
+    expect(await readdir(join(home, ".config", "agent-waker"))).toEqual([
+      "config.yaml",
+    ]);
+  });
+
+  it("guides a missing time and lets the user cancel the resolved plan before writing", async () => {
+    await writeConfig();
+    const before = await configFile();
+    const result = await invoke(["schedule", "set"], {
+      answers: ["06:45", "n"],
+      isTty: true,
+      now: at("06:00"),
+    });
+
+    expect(result.code).toBe(EXIT.ok);
+    expect(result.questions).toEqual([
+      "What time do you want the agents ready by? (07:00)",
+      "Apply this schedule? [Y/n] (y)",
+    ]);
+    expect(result.out).toContain("Fake claude  enabled  06:45 Europe/Rome");
+    expect(result.out).toContain("Schedule unchanged");
+    expect(await configFile()).toBe(before);
+    expect(await readdir(join(home, ".config", "agent-waker"))).toEqual([
+      "config.yaml",
+    ]);
+    expect(await readdir(home)).toEqual([".config"]);
+  });
+
+  it("does not overwrite configuration edited while the plan awaits confirmation", async () => {
+    await writeConfig();
+    const edited =
+      "# edited during confirmation\n" +
+      CONFIG +
+      "agents:\n  codex:\n    enabled: false\n";
+    const result = await invoke(["schedule", "set", "06:45"], {
+      isTty: true,
+      answers: ["y"],
+      onAsk: async () => writeConfig(edited),
+    });
+
+    expect(result.code).toBe(EXIT.failed);
+    expect(result.err).toContain("changed while");
+    expect(await configFile()).toBe(edited);
+    expect(await readdir(join(home, ".config", "agent-waker"))).toEqual([
+      "config.yaml",
+    ]);
+  });
+
+  it("offers the selected agent's current time and applies its confirmed plan", async () => {
+    await writeConfig(
+      CONFIG + 'agents:\n  codex:\n    schedule:\n      notBefore: "08:30"\n',
+    );
+    const result = await invoke(["schedule", "set", "--agent", "codex"], {
+      isTty: true,
+      answers: ["", "y"],
+      now: at("06:00"),
+    });
+
+    expect(result.code).toBe(EXIT.ok);
+    expect(result.questions[0]).toBe(
+      "What time do you want the agents ready by? (08:30)",
+    );
+    expect(result.out).toContain("Fake codex  enabled  08:30 Europe/Rome");
+    expect((await invoke(["status"])).out).toContain("08:30");
+  });
+
+  it("shows the plan before asking and lets --yes apply without a prompt", async () => {
+    await writeConfig();
+    const confirmed = await invoke(["schedule", "set", "06:45"], {
+      isTty: true,
+      answers: ["y"],
+      onAsk: async (question, output) => {
+        expect(question).toContain("Apply this schedule");
+        expect(output).toContain("Fake claude  enabled  06:45 Europe/Rome");
+        expect(await configFile()).toBe(CONFIG);
+      },
+    });
+    expect(confirmed.code).toBe(EXIT.ok);
+    expect(confirmed.questions).toHaveLength(1);
+    expect(confirmed.out.indexOf("Resolved schedule")).toBeLessThan(
+      confirmed.out.indexOf("Desired activation changed"),
+    );
+    const scripted = await invoke(["schedule", "set", "08:00", "--yes"], {
+      isTty: true,
+      answers: ["n"],
+    });
+    expect(scripted.code).toBe(EXIT.ok);
+    expect(scripted.questions).toEqual([]);
+    expect((await invoke(["status"])).out).toContain(
+      "Desired activation: 08:00",
+    );
+  });
+
   it("changes the time and says what changed", async () => {
     await writeConfig();
 
@@ -1511,6 +1648,214 @@ describe("init", () => {
       runner: options.runner ?? installs,
     });
   };
+
+  it.each([
+    { now: at("06:00"), next: "today 06:45" },
+    { now: at("09:00"), next: "tomorrow 06:45" },
+  ])(
+    "previews first-run setup without creating any files or contacting agents at $next",
+    async ({ now, next }) => {
+      const result = await invoke(
+        [
+          "init",
+          "--dry-run",
+          "--time",
+          "06:45",
+          "--timezone",
+          "Europe/Rome",
+          "--agents",
+          "codex",
+        ],
+        {
+          now,
+          answers: ["y"],
+          scripts: {
+            claude: {
+              detect: [new Error("must not detect")],
+              auth: [new Error("must not inspect auth")],
+              activate: [new Error("must not activate")],
+            },
+            codex: {
+              detect: [new Error("must not detect")],
+              auth: [new Error("must not inspect auth")],
+              activate: [new Error("must not activate")],
+            },
+          },
+          runner: {
+            run: () => {
+              throw new Error("must not run scheduler commands");
+            },
+          },
+        },
+      );
+
+      expect(result.code).toBe(EXIT.ok);
+      expect(result.out).toContain("Resolved schedule");
+      expect(result.out).toContain("Fake codex  enabled  06:45 Europe/Rome");
+      expect(result.out).toContain(next);
+      expect(result.out).toContain("Dry run: nothing written");
+      expect(result.questions).toEqual([]);
+      expect(await readdir(home)).toEqual([]);
+    },
+  );
+
+  it("does not execute the requested Node path while previewing setup", async () => {
+    const candidate = join(home, "candidate-node");
+    const marker = join(home, "candidate-was-run");
+    await writeFile(
+      candidate,
+      `#!/bin/sh\nprintf 'invoked' > '${marker}'\nprintf 'v24.1.0\\n'\n`,
+      { mode: 0o755 },
+    );
+
+    const result = await setUp(
+      ["init", "--dry-run", "--node-path", candidate],
+      { runner: createProcessRunner({ env: { HOME: home } }) },
+    );
+
+    expect(result.code).toBe(EXIT.ok);
+    expect(
+      await readFile(marker, "utf8").catch(() => undefined),
+    ).toBeUndefined();
+    expect(result.out).toContain("Node path was not probed");
+    expect(result.out).toContain("runtime is unvalidated");
+  });
+
+  it("previews the same timezone and time defaults that interactive setup applies", async () => {
+    await writeConfig(
+      'version: 1\ntimezone: America/New_York\nschedule:\n  notBefore: "11:30"\n',
+    );
+
+    const preview = await invoke(["init", "--dry-run"], {
+      isTty: true,
+      systemTimezone: "UTC",
+      now: at("06:00"),
+    });
+    const actual = await setUp(["init"], {
+      isTty: true,
+      systemTimezone: "UTC",
+      answers: [],
+      now: at("06:00"),
+    });
+
+    expect(preview.code).toBe(EXIT.ok);
+    expect(preview.out).toContain("Fake claude  enabled  07:00 UTC");
+    expect(preview.out).toContain("Fake codex  enabled  07:00 UTC");
+    expect(actual.questions).toContain(
+      "Which timezone is your working day in? (UTC)",
+    );
+    expect(actual.questions).toContain(
+      "What time do you want the agents ready by? (07:00)",
+    );
+    expect(actual.out).toContain("Fake claude  enabled  07:00 UTC");
+    expect(actual.out).toContain("Fake codex  enabled  07:00 UTC");
+    expect(await configFile()).toContain("timezone: UTC");
+    expect(await configFile()).toContain('notBefore: "07:00"');
+    expect(preview.out).toContain(
+      "actual first-run setup enables only agents detected as ready",
+    );
+  });
+
+  it("leaves all existing setup and scheduling files unchanged during both previews", async () => {
+    await writeConfig(
+      CONFIG +
+        'agents:\n  codex:\n    schedule:\n      notBefore: "08:00"\ntelemetry:\n  endpoint: http://localhost:4318\n  headers:\n    Authorization: private-collector-token\n',
+    );
+    const fixtures = [
+      ".config/agent-waker/config.yaml.bak",
+      ".local/state/agent-waker/state.json",
+      ".local/state/agent-waker/logs/2026-09-07.jsonl",
+      ".local/share/agent-waker/bin/tick.sh",
+      `Library/LaunchAgents/${DEFAULT_LABEL}.plist`,
+    ];
+    for (const fixture of fixtures) {
+      await mkdir(join(home, fixture, ".."), { recursive: true });
+      await writeFile(join(home, fixture), `unchanged ${fixture}\n`);
+    }
+    const inventory = async (): Promise<unknown[]> =>
+      Promise.all(
+        (await readdir(home, { recursive: true })).sort().map(async (path) => {
+          const details = await stat(join(home, path));
+          return [
+            path,
+            details.mtimeMs,
+            details.isFile() ? await readFile(join(home, path), "utf8") : null,
+          ];
+        }),
+      );
+    const before = await inventory();
+    const init = await invoke(
+      ["init", "--dry-run", "--time", "06:45", "--agent-times", "claude=06:30"],
+      { now: at("06:00"), answers: ["y"] },
+    );
+    const schedule = await invoke(["schedule", "set", "09:00", "--dry-run"], {
+      now: at("06:00"),
+    });
+
+    expect(init.code).toBe(EXIT.ok);
+    expect(schedule.code).toBe(EXIT.ok);
+    expect(init.out).toContain("Fake claude  enabled  06:30 Europe/Rome");
+    expect(init.out).toContain("Fake codex  enabled  08:00 Europe/Rome");
+    expect(schedule.out).toContain("Fake claude  enabled  09:00 Europe/Rome");
+    expect(schedule.out).toContain("Fake codex  enabled  08:00 Europe/Rome");
+    expect(init.out + schedule.out).not.toContain("private-collector-token");
+    expect(init.questions).toEqual([]);
+    expect(await inventory()).toEqual(before);
+  });
+
+  it("accepts per-agent times during setup while preserving unspecified overrides", async () => {
+    await writeConfig(
+      CONFIG +
+        'agents:\n  claude:\n    schedule:\n      notBefore: "08:30" # keep mine\n',
+    );
+    const result = await setUp(
+      [
+        "init",
+        "--time",
+        "07:00",
+        "--timezone",
+        "Europe/Rome",
+        "--agents",
+        "claude,codex",
+        "--agent-times",
+        "codex=06:45",
+      ],
+      { now: at("06:00"), answers: [] },
+    );
+
+    expect(result.code).toBe(EXIT.ok);
+    expect(result.questions).toEqual([]);
+    expect(result.out).toContain("Fake claude  enabled  08:30 Europe/Rome");
+    expect(result.out).toContain("Fake codex  enabled  06:45 Europe/Rome");
+    expect(result.out).toContain("today 06:45");
+    expect(await configFile()).toContain("# keep mine");
+    const status = await invoke(["status"], { now: at("06:00") });
+    expect(status.out).toContain("08:30");
+    expect(status.out).toContain("06:45");
+  });
+
+  it.each([
+    ["init", "--time", "breakfast"],
+    ["init", "--timezone", "Europe/Roma"],
+    ["init", "--agents", "gemini"],
+    ["init", "--agent-times", "codex=25:00"],
+    ["init", "--agent-times", "gemini=07:00"],
+    ["init", "--agent-times", "codex=07:00,codex=08:00"],
+    ["init", "--agent-times", "codex"],
+    ["init", "--repair", "--agent-times", "codex=07:00"],
+    ["init", "--repair", "--dry-run"],
+    ["status", "--dry-run"],
+    ["status", "--agent", "codex"],
+    ["schedule", "set", "07:00", "--agent-times", "codex=08:00"],
+  ])(
+    "rejects invalid configuration options without creating anything: %j",
+    async (...argv) => {
+      const result = await invoke(argv);
+      expect(result.code).not.toBe(EXIT.ok);
+      expect(result.err).not.toBe("");
+      expect(await readdir(home)).toEqual([]);
+    },
+  );
 
   it("repairs an nvm install using a verified stable Node alias and retains that alias", async () => {
     await writeConfig("# untouched\nversion: 1\ntimezone: Europe/Rome\n");

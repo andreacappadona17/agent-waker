@@ -9,10 +9,18 @@
 
 import type { CommandContext } from "#src/cli/context.js";
 import { EXIT, type ExitCode } from "#src/cli/exit.js";
-import { effectiveAgentConfig } from "#src/config/config.js";
-import { editConfig, type ConfigEdit } from "#src/config/edit.js";
-import type { AgentId } from "#src/core/agent.js";
+import { relativeTime } from "#src/cli/format.js";
 import {
+  effectiveAgentConfig,
+  parseConfig,
+  type AgentWakerConfig,
+} from "#src/config/config.js";
+import { editConfig, type ConfigEdit } from "#src/config/edit.js";
+import { AGENT_IDS, asAgents, type AgentId } from "#src/core/agent.js";
+import {
+  localDateAt,
+  nextLocalDate,
+  resolveLocalTime,
   formatLocalTime,
   parseLocalTime,
   parseTimeZone,
@@ -40,14 +48,99 @@ async function rewrite(
   });
 }
 
+/** CLI assignments to the already-supported per-agent desired times. */
+export function parseAgentTimes(input: string | undefined): ConfigEdit[] {
+  if (input === undefined) return [];
+  const seen = new Set<AgentId>();
+  return input.split(",").map((assignment) => {
+    const [name, time, extra] = assignment.split("=");
+    if (name === undefined || time === undefined || extra !== undefined) {
+      throw new Error(
+        "--agent-times needs agent=HH:MM assignments, separated by commas.",
+      );
+    }
+    const agent = asAgents([name])[0];
+    if (agent === undefined || seen.has(agent))
+      throw new Error(`Duplicate agent time: ${name}`);
+    seen.add(agent);
+    return {
+      path: ["agents", agent, "schedule", "notBefore"],
+      value: formatLocalTime(parseLocalTime(time)),
+    };
+  });
+}
+
+/** Shows only scheduling choices, never credentials or telemetry settings. */
+export function renderSchedulePlan(
+  context: CommandContext,
+  config: AgentWakerConfig,
+): void {
+  const now = context.environment.now();
+  const next: number[] = [];
+  const lines = [
+    "Resolved schedule",
+    "",
+    `  Default  ${formatLocalTime(config.schedule.notBefore)} ${config.timezone}`,
+  ];
+  for (const agentId of AGENT_IDS) {
+    const effective = effectiveAgentConfig(config, agentId);
+    const opens = resolveLocalTime(
+      localDateAt(now, effective.timezone),
+      effective.notBefore,
+      effective.timezone,
+    );
+    if (effective.enabled)
+      next.push(
+        now < opens
+          ? opens
+          : resolveLocalTime(
+              nextLocalDate(localDateAt(now, effective.timezone)),
+              effective.notBefore,
+              effective.timezone,
+            ),
+      );
+    lines.push(
+      `  ${context.registry.get(agentId).displayName}  ${effective.enabled ? "enabled" : "disabled"}  ${formatLocalTime(effective.notBefore)} ${effective.timezone}`,
+    );
+  }
+  lines.push(
+    "",
+    next.length === 0
+      ? "No agents enabled."
+      : `Next desired activation: ${relativeTime(Math.min(...next), now, config.timezone)}`,
+  );
+  context.environment.write(`${lines.join("\n")}\n`);
+}
+
 /** `schedule set 07:00 [--timezone Europe/Rome]`. */
 export async function scheduleSetCommand(
   context: CommandContext,
   time: string | undefined,
   timezone: string | undefined,
+  options: { agent?: string; dryRun?: boolean; assumeYes?: boolean } = {},
 ): Promise<ExitCode> {
   const { environment } = context;
+  const agent =
+    options.agent === undefined ? undefined : asAgents([options.agent])[0];
+  const before = formatLocalTime(
+    agent === undefined
+      ? context.config.schedule.notBefore
+      : effectiveAgentConfig(context.config, agent).notBefore,
+  );
 
+  if (
+    time === undefined &&
+    environment.ask !== undefined &&
+    environment.isTty
+  ) {
+    time =
+      (
+        await environment.ask(
+          "What time do you want the agents ready by?",
+          before,
+        )
+      ).trim() || before;
+  }
   if (time === undefined) {
     environment.writeError(
       "Give a time, such as `agent-waker schedule set 07:00`.\n",
@@ -60,14 +153,45 @@ export async function scheduleSetCommand(
   // message is the same one the config loader would have given.
   const wanted = parseLocalTime(time);
   const zone = timezone === undefined ? undefined : parseTimeZone(timezone);
-  const before = formatLocalTime(context.config.schedule.notBefore);
-
   const edits: ConfigEdit[] = [
-    { path: ["schedule", "notBefore"], value: formatLocalTime(wanted) },
+    {
+      path:
+        agent === undefined
+          ? ["schedule", "notBefore"]
+          : ["agents", agent, "schedule", "notBefore"],
+      value: formatLocalTime(wanted),
+    },
     ...(zone === undefined ? [] : [{ path: ["timezone"], value: zone }]),
   ];
 
-  await rewrite(context, edits);
+  const source = await readFile(context.paths.config, "utf8");
+  const updated = editConfig(source, edits);
+  renderSchedulePlan(context, parseConfig(updated, context.paths.config));
+  if (options.dryRun === true) {
+    environment.write("Dry run: nothing written.\n");
+    return EXIT.ok;
+  }
+  if (
+    environment.isTty &&
+    environment.ask !== undefined &&
+    options.assumeYes !== true
+  ) {
+    const answer =
+      (await environment.ask("Apply this schedule? [Y/n]", "y")).trim() || "y";
+    if (!/^y(?:es)?$/i.test(answer)) {
+      environment.write("Schedule unchanged.\n");
+      return EXIT.ok;
+    }
+  }
+  if ((await readFile(context.paths.config, "utf8")) !== source) {
+    throw new Error(
+      "The configuration changed while the plan was being reviewed. Run schedule set again to preview the new plan.",
+    );
+  }
+  await writeAtomic(context.paths.config, updated, {
+    mode: CONFIG_MODE,
+    backupPath: `${context.paths.config}.bak`,
+  });
 
   environment.write(
     [

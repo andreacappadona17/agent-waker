@@ -19,7 +19,8 @@ import { renderDetection, surveyAgents } from "#src/cli/detect.js";
 import { EXIT, type ExitCode } from "#src/cli/exit.js";
 import { relativeTime, supportsUnicode } from "#src/cli/format.js";
 import { effectiveAgentConfig, parseConfig } from "#src/config/config.js";
-import { editConfig } from "#src/config/edit.js";
+import { parseAgentTimes, renderSchedulePlan } from "#src/cli/schedule.js";
+import { editConfig, type ConfigEdit } from "#src/config/edit.js";
 import { AGENT_IDS, asAgents, type AgentId } from "#src/core/agent.js";
 import { cycleStartAt } from "#src/core/state.js";
 import {
@@ -97,6 +98,9 @@ schedule:
 #   serviceName: agent-waker
 #   timeout: 5s
 
+# Set an individual time with \`agent-waker schedule set 08:00 --agent codex\`.
+# During setup, use \`--agent-times claude=07:00,codex=08:00\`.
+#
 # Which agents are in the daily cycle. Change one with
 # \`agent-waker enable\` or \`agent-waker disable\`.
 agents:
@@ -336,36 +340,45 @@ export async function repairCommand(
 }
 
 /**
- * Writes the choices into the configuration, keeping everything else.
+ * Resolves the choices into validated configuration text, keeping everything else.
  *
  * One path whether the file exists or not: a missing one starts from the
  * template, and `editConfig` puts the values in either way.
  */
-async function writeChoices(
-  context: CommandContext,
+function renderChoices(
   existing: string | undefined,
   choices: {
     timezone: string;
     notBefore: string;
     enabled: ReadonlySet<AgentId>;
+    agentTimes: readonly ConfigEdit[];
   },
-): Promise<void> {
-  await writeAtomic(
-    context.paths.config,
-    editConfig(existing ?? TEMPLATE, [
-      { path: ["timezone"], value: choices.timezone },
-      { path: ["schedule", "notBefore"], value: choices.notBefore },
-      ...AGENT_IDS.map((agentId) => ({
-        path: ["agents", agentId, "enabled"],
-        value: choices.enabled.has(agentId),
-      })),
-    ]),
-    // Best effort, and a no-op on a first run: there is nothing to keep yet.
-    { mode: CONFIG_MODE, backupPath: `${context.paths.config}.bak` },
-  );
+): string {
+  return editConfig(existing ?? TEMPLATE, [
+    { path: ["timezone"], value: choices.timezone },
+    { path: ["schedule", "notBefore"], value: choices.notBefore },
+    ...choices.agentTimes,
+    ...AGENT_IDS.map((agentId) => ({
+      path: ["agents", agentId, "enabled"],
+      value: choices.enabled.has(agentId),
+    })),
+  ]);
+}
+
+/** Defaults shown and applied by both the preview and the interactive setup. */
+function setupDefaults(context: CommandContext): {
+  timezone: string;
+  notBefore: string;
+} {
+  return {
+    timezone: context.environment.systemTimezone,
+    notBefore: DEFAULT_NOT_BEFORE,
+  };
 }
 
 export interface InitOptions {
+  readonly dryRun?: boolean;
+  readonly agentTimes?: string;
   readonly nodePath?: string;
   readonly time?: string;
   readonly timezone?: string;
@@ -383,16 +396,47 @@ export async function initCommand(
   options: InitOptions,
 ): Promise<ExitCode> {
   const { environment } = context;
+  const defaults = setupDefaults(context);
+  const agentTimes = parseAgentTimes(options.agentTimes);
   const nodePath =
-    options.nodePath === undefined
-      ? environment.execPath
-      : await stableNodePath(context, options.nodePath);
+    options.dryRun === true
+      ? (options.nodePath ?? environment.execPath)
+      : options.nodePath === undefined
+        ? environment.execPath
+        : await stableNodePath(context, options.nodePath);
 
   environment.write(WELCOME);
 
   const existing = await readFile(context.paths.config, "utf8").catch(
     () => undefined,
   );
+
+  if (options.dryRun === true) {
+    const enabled =
+      options.agents === undefined
+        ? new Set(AGENT_IDS.filter((id) => context.config.agents[id].enabled))
+        : new Set(
+            /^none$/i.test(options.agents.trim())
+              ? []
+              : asAgents(options.agents.split(/[\s,]+/).filter(Boolean)),
+          );
+    const updated = renderChoices(existing, {
+      timezone: parseTimeZone(options.timezone ?? defaults.timezone),
+      notBefore: formatLocalTime(
+        parseLocalTime(options.time ?? defaults.notBefore),
+      ),
+      enabled,
+      agentTimes,
+    });
+    renderSchedulePlan(context, parseConfig(updated, context.paths.config));
+    environment.write(
+      `\nWould write configuration: ${context.paths.config}\nWould install the background scheduler using: ${nodePath}\nEntry point: ${environment.entrypoint}\nLauncher directory: ${context.paths.launcherDir}\nScheduler logs: ${context.paths.logDir}\n`,
+    );
+    environment.write(
+      "Node path was not probed, so its runtime is unvalidated. Readiness is not checked in a dry run. Without --agents, the preview uses existing enabled choices (or first-run defaults and assumes they are ready); actual first-run setup enables only agents detected as ready.\nDry run: nothing written.\n",
+    );
+    return EXIT.ok;
+  }
 
   // What is actually installed, before asking anything that depends on it.
   const surveys = await surveyAgents(context);
@@ -428,7 +472,7 @@ export async function initCommand(
       (await askOr(
         context,
         "Which timezone is your working day in?",
-        environment.systemTimezone,
+        defaults.timezone,
       )),
   );
   const notBefore = formatLocalTime(
@@ -437,7 +481,7 @@ export async function initCommand(
         (await askOr(
           context,
           "What time do you want the agents ready by?",
-          DEFAULT_NOT_BEFORE,
+          defaults.notBefore,
         )),
     ),
   );
@@ -451,11 +495,15 @@ export async function initCommand(
 
   // Re-read: the prompts above have no time limit, and the file may have
   // appeared or changed while they were open.
-  await writeChoices(
-    context,
+  const updated = renderChoices(
     await readFile(context.paths.config, "utf8").catch(() => undefined),
-    { timezone, notBefore, enabled },
+    { timezone, notBefore, enabled, agentTimes },
   );
+  renderSchedulePlan(context, parseConfig(updated, context.paths.config));
+  await writeAtomic(context.paths.config, updated, {
+    mode: CONFIG_MODE,
+    backupPath: `${context.paths.config}.bak`,
+  });
   await installScheduler(context, nodePath);
 
   environment.write(SCHEDULER_NOTE);
@@ -528,6 +576,7 @@ export async function initCommand(
       "  agent-waker status",
       "  agent-waker doctor",
       "  agent-waker run",
+      "  agent-waker schedule set 08:00 --agent codex",
       "",
     ].join("\n"),
   );

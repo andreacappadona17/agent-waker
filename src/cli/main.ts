@@ -25,7 +25,7 @@ Commands:
   tick                    Run one scheduling pass; the scheduler calls this
   run [agent...]          Evaluate now rather than waiting for the schedule
   logs [agent...]         Recent events
-  schedule set <time>     Change the desired activation time
+  schedule set [time]     Preview and change desired activation times
   enable <agent...>       Include an agent in the daily cycle
   disable <agent...>      Leave an agent out of it
   init                    Set up the configuration and the scheduler
@@ -33,10 +33,13 @@ Commands:
   help                    Show this message
 
 Options:
-  --timezone <zone>       With schedule set, change the zone as well
+  --timezone <zone>       With init or schedule set, the working timezone
   --limit <n>             With logs, how many events to show
   --time <hh:mm>          With init, the desired activation time
   --agents <list>         With init, which agents to manage
+  --agent-times <list>    With init, overrides: claude=07:00,codex=08:00
+  --agent <name>          With schedule set, change only this agent’s time
+  --dry-run               With init or schedule set, preview and write nothing
   --repair                With init, rebuild the scheduler only
   --node-path <path>      With init, use a stable Node >=24 interpreter
   --logs                  With uninstall, remove the logs too
@@ -69,11 +72,20 @@ const VALUE_OPTIONS = new Set([
   "--limit",
   "--time",
   "--agents",
+  "--agent",
+  "--agent-times",
   "--node-path",
 ]);
 
 /** Flags that are options rather than mistakes. */
-const KNOWN_FLAGS = new Set(["--repair", "--logs", "--debug", "-y", "--yes"]);
+const KNOWN_FLAGS = new Set([
+  "--dry-run",
+  "--repair",
+  "--logs",
+  "--debug",
+  "-y",
+  "--yes",
+]);
 
 const COMMANDS = new Set([
   "status",
@@ -132,11 +144,16 @@ export function parseArguments(argv: readonly string[]): ParsedCommand {
       continue;
     }
 
-    const value = inline ?? rest[++index];
+    const value = inline ?? rest[index + 1];
 
-    if (value === undefined) {
+    if (
+      value === undefined ||
+      (inline === undefined && value.startsWith("-"))
+    ) {
       throw new Error(`${name} needs a value.`);
     }
+
+    if (inline === undefined) index += 1;
 
     options.set(name, value);
   }
@@ -210,8 +227,42 @@ export async function run(environment: CliEnvironment): Promise<ExitCode> {
     (flag) => !KNOWN_FLAGS.has(flag),
   );
 
+  if (parsed.options.has("--agent-times") && parsed.command !== "init") {
+    environment.writeError("--agent-times is only supported with init.\n");
+    return EXIT.usage;
+  }
+
+  if (parsed.options.has("--agent") && parsed.command !== "schedule") {
+    environment.writeError("--agent is only supported with schedule set.\n");
+    return EXIT.usage;
+  }
+
   if (parsed.options.has("--node-path") && parsed.command !== "init") {
     environment.writeError("--node-path is only supported with init.\n");
+    return EXIT.usage;
+  }
+
+  if (
+    parsed.command === "init" &&
+    parsed.flags.has("--repair") &&
+    ["--time", "--timezone", "--agents", "--agent-times"].some((option) =>
+      parsed.options.has(option),
+    )
+  ) {
+    environment.writeError(
+      "--repair rebuilds only the scheduler; omit configuration options.\n",
+    );
+    return EXIT.usage;
+  }
+
+  if (
+    parsed.flags.has("--dry-run") &&
+    (!["init", "schedule"].includes(parsed.command) ||
+      parsed.flags.has("--repair"))
+  ) {
+    environment.writeError(
+      "--dry-run is supported with init or schedule set, without --repair.\n",
+    );
     return EXIT.usage;
   }
 
@@ -243,8 +294,27 @@ export async function run(environment: CliEnvironment): Promise<ExitCode> {
     parsed.command === "init" || parsed.command === "uninstall";
 
   try {
+    if (parsed.command === "init") {
+      const { parseLocalTime, parseTimeZone } =
+        await import("#src/core/time.js");
+      const { parseAgentTimes } = await import("#src/cli/schedule.js");
+      const time = parsed.options.get("--time");
+      const timezone = parsed.options.get("--timezone");
+      const selection = parsed.options.get("--agents");
+      if (time !== undefined) parseLocalTime(time);
+      if (timezone !== undefined) parseTimeZone(timezone);
+      if (selection !== undefined && !/^none$/i.test(selection.trim())) {
+        asAgents(selection.split(/[\s,]+/).filter(Boolean));
+      }
+      parseAgentTimes(parsed.options.get("--agent-times"));
+    }
     const { openContext } = await import("#src/cli/context.js");
-    const context = await openContext(environment, { allowMissingConfig });
+    const context = await openContext(environment, {
+      allowMissingConfig,
+      readOnly:
+        parsed.command === "schedule" ||
+        (parsed.command === "init" && parsed.flags.has("--dry-run")),
+    });
 
     switch (parsed.command) {
       case "status": {
@@ -267,7 +337,9 @@ export async function run(environment: CliEnvironment): Promise<ExitCode> {
               ...toOption("time", parsed.options.get("--time")),
               ...toOption("timezone", parsed.options.get("--timezone")),
               ...toOption("agents", parsed.options.get("--agents")),
+              ...toOption("agentTimes", parsed.options.get("--agent-times")),
               ...toOption("nodePath", parsed.options.get("--node-path")),
+              dryRun: parsed.flags.has("--dry-run"),
             });
       }
       case "uninstall": {
@@ -318,6 +390,11 @@ export async function run(environment: CliEnvironment): Promise<ExitCode> {
           context,
           time,
           parsed.options.get("--timezone"),
+          {
+            ...toOption("agent", parsed.options.get("--agent")),
+            dryRun: parsed.flags.has("--dry-run"),
+            assumeYes: parsed.flags.has("-y") || parsed.flags.has("--yes"),
+          },
         );
       }
       case "enable":
