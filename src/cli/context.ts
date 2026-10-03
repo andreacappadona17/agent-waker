@@ -119,7 +119,7 @@ export function defaultRegistry(): AdapterRegistry {
  */
 export async function openContext(
   environment: CliEnvironment,
-  options: { allowMissingConfig?: boolean } = {},
+  options: { allowMissingConfig?: boolean; readOnly?: boolean } = {},
 ): Promise<CommandContext> {
   const paths = resolvePaths(environment.env, environment.home);
   const source = await readFile(paths.config, "utf8").catch(() => undefined);
@@ -142,10 +142,12 @@ export async function openContext(
   // a directory that does not exist fails with ENOENT, which is
   // indistinguishable from a missing executable, so it is created before any
   // adapter runs. One per agent, so neither can see what the other left.
-  await mkdir(paths.workDir, { recursive: true });
+  if (options.readOnly !== true) {
+    await mkdir(paths.workDir, { recursive: true });
 
-  for (const agentId of AGENT_IDS) {
-    await mkdir(join(paths.workDir, agentId), { recursive: true });
+    for (const agentId of AGENT_IDS) {
+      await mkdir(join(paths.workDir, agentId), { recursive: true });
+    }
   }
 
   // Configuration became somewhere credentials live the moment telemetry did.
@@ -155,7 +157,7 @@ export async function openContext(
 
   const telemetryConfig = config.telemetry;
   const telemetry =
-    telemetryConfig === undefined
+    telemetryConfig === undefined || options.readOnly === true
       ? NO_TELEMETRY
       : await import("#src/telemetry/otlp.js").then(({ createTelemetry }) =>
           createTelemetry({

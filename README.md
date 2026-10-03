@@ -78,7 +78,7 @@ silently substitute API-key billing for subscription usage.
 | `agent-waker detect`              | Discover installed agents, change nothing   |
 | `agent-waker doctor [agent...]`   | Diagnose install, auth and runtime problems |
 | `agent-waker logs [agent...]`     | Recent events; `--debug` for raw records    |
-| `agent-waker schedule set <time>` | Change the desired activation time          |
+| `agent-waker schedule set [time]` | Preview and change desired activation times |
 | `agent-waker enable <agent...>`   | Include an agent in the daily cycle         |
 | `agent-waker disable <agent...>`  | Leave an agent out of it                    |
 | `agent-waker uninstall`           | Remove agent waker, leave your agents alone |
@@ -104,6 +104,34 @@ Set it up when you are ready to have it run on its own:
 agent-waker init                   # asks which agents, and from what time
 agent-waker init --agents claude --time 07:00 --timezone Europe/Rome
 ```
+
+Preview setup before installing anything:
+
+```bash
+agent-waker init --dry-run --agents claude,codex --time 07:00 --timezone Europe/Rome
+agent-waker init --agents claude,codex --time 07:00 --timezone Europe/Rome --agent-times claude=07:00,codex=08:00
+```
+
+`init --dry-run` validates and shows the effective schedule and installation
+paths without writing configuration, backups, logs, state or scheduler files.
+It does not run provider checks or activate agents. Without `--agents`, it uses
+existing enabled choices, or the config defaults on first setup; actual setup
+checks readiness before offering first-run choices.
+
+Change the schedule with a preview of each agent's effective time:
+
+```bash
+agent-waker schedule set                             # guided in a terminal
+agent-waker schedule set 06:45 --dry-run              # preview without writing
+agent-waker schedule set 08:00 --agent codex          # keep Claude's time
+agent-waker schedule set 07:00 --timezone Europe/Rome --yes
+```
+
+In a terminal, `schedule set` asks for a missing time and confirms the resolved
+plan before writing. `--yes` skips confirmation; without a terminal, supply the
+time and the plan is shown before applying it. Global changes preserve existing
+per-agent overrides; use `--agent` to change an individual override. Times are
+earliest desired activation times, so a provider limit can delay activation.
 
 **Check the schedule before removing an nvm version.** `agent-waker doctor`
 checks the recorded interpreter and entry point, and warns about version-specific
