@@ -135,13 +135,26 @@ async function schedulerSection(context: CommandContext): Promise<Section> {
     });
   } else if (scheduler.stalePath) {
     // The Node-upgrade case: it looks installed and does nothing.
+    const reason = scheduler.staleReason ?? "launcher";
     checks.push({
-      name: "scheduler points at a launcher that has gone",
+      name:
+        reason === "node"
+          ? "scheduler Node interpreter is missing or not executable"
+          : reason === "entrypoint"
+            ? "scheduler entry point is missing or unreadable"
+            : "scheduler launcher is missing or invalid",
       outcome: "fail",
-      evidence: scheduler.launcherPath,
+      evidence:
+        reason === "node"
+          ? (scheduler.nodePath ?? scheduler.launcherPath)
+          : reason === "entrypoint"
+            ? (scheduler.entrypoint ?? scheduler.launcherPath)
+            : scheduler.launcherPath,
       advice: [
-        "The scheduler points at a launcher that is no longer there, usually",
-        "after agent waker was reinstalled or moved. Rebuild it with:",
+        reason === "entrypoint"
+          ? "Reinstall agent waker through its official installation method,"
+          : "A recorded scheduler path is no longer usable after an upgrade or move.",
+        "Then rebuild the schedule with:",
         "",
         "  agent-waker init --repair",
       ],
@@ -166,6 +179,43 @@ async function schedulerSection(context: CommandContext): Promise<Section> {
               "  agent-waker init --repair",
             ],
           }),
+    });
+  }
+
+  if (
+    scheduler.installed &&
+    !scheduler.stalePath &&
+    scheduler.nodeManagedByNvm === true
+  ) {
+    checks.push({
+      name: "scheduler uses a version-specific nvm interpreter",
+      outcome: "warn",
+      evidence: scheduler.nodePath ?? scheduler.launcherPath,
+      advice: [
+        "Removing this Node version will stop scheduled activations.",
+        "Repair needs a stable Node >=24 installation, such as Homebrew Node.",
+        "Switch the schedule to a stable interpreter with:",
+        "",
+        "  agent-waker init --repair",
+      ],
+    });
+  }
+
+  if (
+    scheduler.installed &&
+    !scheduler.stalePath &&
+    scheduler.entrypointManagedByNvm === true
+  ) {
+    checks.push({
+      name: "scheduler entry point lives under an nvm version",
+      outcome: "warn",
+      evidence: scheduler.entrypoint ?? scheduler.launcherPath,
+      advice: [
+        "Removing this nvm version will also remove the agent waker entry point.",
+        "Reinstall agent waker using the stable Node installation, then run:",
+        "",
+        "  agent-waker init --repair",
+      ],
     });
   }
 

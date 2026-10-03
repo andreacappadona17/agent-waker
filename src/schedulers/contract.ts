@@ -32,8 +32,14 @@ export interface SchedulerStatus {
   /** The scheduler's own job file: a plist on macOS, a unit on Linux. */
   readonly jobPath: string;
   readonly launcherPath: string;
-  /** True when the job names a launcher that is no longer there. */
+  /** True when the launcher or one of its recorded paths is unusable. */
   readonly stalePath: boolean;
+  readonly staleReason?: "launcher" | "node" | "entrypoint";
+  readonly nodePath?: string;
+  readonly entrypoint?: string;
+  /** A version-specific nvm target can disappear on the next Node upgrade. */
+  readonly nodeManagedByNvm?: boolean;
+  readonly entrypointManagedByNvm?: boolean;
   readonly intervalSeconds?: number;
 }
 

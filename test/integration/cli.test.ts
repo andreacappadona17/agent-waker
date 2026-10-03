@@ -1,10 +1,12 @@
 import {
   chmod,
+  copyFile,
   mkdir,
   mkdtemp,
   readFile,
   rm,
   stat,
+  symlink,
   writeFile,
 } from "node:fs/promises";
 import { createServer, type Server } from "node:http";
@@ -18,9 +20,16 @@ import { parseConfig } from "#src/config/config.js";
 import type { CliEnvironment } from "#src/cli/context.js";
 import { EXIT } from "#src/cli/exit.js";
 import { run } from "#src/cli/main.js";
-import { DEFAULT_LABEL } from "#src/schedulers/launchd.js";
+import {
+  createLaunchdScheduler,
+  DEFAULT_LABEL,
+} from "#src/schedulers/launchd.js";
 import type { AgentObservation } from "#src/core/observation.js";
-import type { ProcessResult, ProcessRunner } from "#src/process/runner.js";
+import {
+  createProcessRunner,
+  type ProcessResult,
+  type ProcessRunner,
+} from "#src/process/runner.js";
 import { createStateStore } from "#src/state/store.js";
 import { createFakeAdapter, type FakeScript } from "../support/fake-adapter.js";
 
@@ -67,6 +76,10 @@ const quietRunner: ProcessRunner = {
     }),
 };
 
+const loadedRunner: ProcessRunner = {
+  run: async (spec) => ({ ...(await quietRunner.run(spec)), exitCode: 0 }),
+};
+
 interface Invocation {
   code: number;
   out: string;
@@ -86,6 +99,8 @@ const invoke = async (
     answers?: string[];
     runner?: ProcessRunner;
     platform?: string;
+    execPath?: string;
+    entrypoint?: string;
   } = {},
 ): Promise<Invocation> => {
   let out = "";
@@ -98,8 +113,8 @@ const invoke = async (
     platform: options.platform ?? "darwin",
     uid: 501,
     isTty: options.isTty ?? false,
-    execPath: "/opt/node/bin/node",
-    entrypoint: "/opt/agent-waker/dist/cli/bin.js",
+    execPath: options.execPath ?? "/opt/node/bin/node",
+    entrypoint: options.entrypoint ?? "/opt/agent-waker/dist/cli/bin.js",
     systemTimezone: "Europe/Rome",
     now: () => options.now ?? at("09:00"),
     ...(options.answers === undefined
@@ -1222,6 +1237,148 @@ describe("doctor", () => {
     expect(out).toContain("agent-waker init");
   });
 
+  it("warns about an nvm interpreter before it disappears and offers repair", async () => {
+    await writeConfig();
+    const nodePath = join(
+      home,
+      ".nvm",
+      "versions",
+      "node",
+      "v24.1.0",
+      "bin",
+      "node",
+    );
+    await mkdir(join(nodePath, ".."), { recursive: true });
+    await writeFile(nodePath, "#!/bin/sh\n", { mode: 0o755 });
+    const entrypoint = join(home, "entry.js");
+    await writeFile(entrypoint, "");
+    const launcherPath = join(
+      home,
+      ".local",
+      "share",
+      "agent-waker",
+      "bin",
+      "agent-waker-runner",
+    );
+    await createLaunchdScheduler({
+      runner: loadedRunner,
+      home,
+      uid: 501,
+      launcherPath,
+    }).install({
+      nodePath,
+      entrypoint,
+      intervalSeconds: 60,
+      logDirectory: home,
+    });
+    const before = await readFile(launcherPath, "utf8");
+
+    const { out, code } = await invoke(["doctor"], { runner: loadedRunner });
+    expect(code).toBe(EXIT.partial);
+    expect(out).toContain("scheduler uses a version-specific nvm interpreter");
+    expect(out).toContain(nodePath);
+    expect(out).toContain("agent-waker init --repair");
+    expect(await readFile(launcherPath, "utf8")).toBe(before);
+  });
+
+  it("warns about an nvm entry point even when the interpreter is stable", async () => {
+    await writeConfig();
+    const entrypoint = join(
+      home,
+      ".nvm",
+      "versions",
+      "node",
+      "v24.1.0",
+      "lib",
+      "bin.js",
+    );
+    await mkdir(join(entrypoint, ".."), { recursive: true });
+    await writeFile(entrypoint, "");
+    const nodePath = join(home, "stable-node");
+    await writeFile(nodePath, "#!/bin/sh\n", { mode: 0o755 });
+    const launcherPath = join(
+      home,
+      ".local",
+      "share",
+      "agent-waker",
+      "bin",
+      "agent-waker-runner",
+    );
+    await createLaunchdScheduler({
+      runner: loadedRunner,
+      home,
+      uid: 501,
+      launcherPath,
+    }).install({
+      nodePath,
+      entrypoint,
+      intervalSeconds: 60,
+      logDirectory: home,
+    });
+    const { out, code } = await invoke(["doctor"], { runner: loadedRunner });
+    expect(code).toBe(EXIT.partial);
+    expect(out).toContain("scheduler entry point lives under an nvm version");
+    expect(out).toContain(entrypoint);
+  });
+
+  it("names a missing recorded Node interpreter instead of blaming the launcher", async () => {
+    await writeConfig();
+    const nodePath = join(home, "removed-node");
+    const launcherPath = join(
+      home,
+      ".local",
+      "share",
+      "agent-waker",
+      "bin",
+      "agent-waker-runner",
+    );
+    await createLaunchdScheduler({
+      runner: loadedRunner,
+      home,
+      uid: 501,
+      launcherPath,
+    }).install({
+      nodePath,
+      entrypoint: "/missing-entry.js",
+      intervalSeconds: 60,
+      logDirectory: home,
+    });
+
+    const { out } = await invoke(["doctor"], { runner: loadedRunner });
+    expect(out).toContain(
+      "scheduler Node interpreter is missing or not executable",
+    );
+    expect(out).toContain(nodePath);
+    expect(out).not.toContain("launcher that has gone");
+  });
+
+  it("identifies an unreadable launcher record as invalid", async () => {
+    await writeConfig();
+    const launcherPath = join(
+      home,
+      ".local",
+      "share",
+      "agent-waker",
+      "bin",
+      "agent-waker-runner",
+    );
+    await createLaunchdScheduler({
+      runner: loadedRunner,
+      home,
+      uid: 501,
+      launcherPath,
+    }).install({
+      nodePath: process.execPath,
+      entrypoint: "/entry.js",
+      intervalSeconds: 60,
+      logDirectory: home,
+    });
+    await writeFile(launcherPath, "#!/bin/sh\nNODE=$(false)\n");
+    expect((await invoke(["doctor"], { runner: loadedRunner })).out).toContain(
+      "scheduler launcher is missing or invalid",
+    );
+  });
+
   it("can be asked about one agent", async () => {
     await writeConfig();
 
@@ -1327,9 +1484,9 @@ describe("doctor", () => {
 describe("init", () => {
   /** launchctl and plutil succeed, so the scheduler installs. */
   const installs: ProcessRunner = {
-    run: (): Promise<ProcessResult> =>
+    run: (spec): Promise<ProcessResult> =>
       Promise.resolve({
-        stdout: "",
+        stdout: spec.args[0] === "--version" ? "v24.1.0\n" : "",
         stderr: "",
         exitCode: 0,
         signal: null,
@@ -1339,10 +1496,302 @@ describe("init", () => {
       }),
   };
 
-  const setUp = (
+  const setUp = async (
     argv: string[],
     options: Parameters<typeof invoke>[1] = {},
-  ): Promise<Invocation> => invoke(argv, { ...options, runner: installs });
+  ): Promise<Invocation> => {
+    const execPath = join(home, "stable-node");
+    const entrypoint = join(home, "entry.js");
+    await writeFile(execPath, "#!/bin/sh\n", { mode: 0o755 });
+    await writeFile(entrypoint, "");
+    return invoke(argv, {
+      execPath,
+      entrypoint,
+      ...options,
+      runner: options.runner ?? installs,
+    });
+  };
+
+  it("repairs an nvm install using a verified stable Node alias and retains that alias", async () => {
+    await writeConfig("# untouched\nversion: 1\ntimezone: Europe/Rome\n");
+    const configBefore = await configFile();
+    const target = join(home, "Cellar", "node", "24.1.0", "bin", "node");
+    await mkdir(join(target, ".."), { recursive: true });
+    await writeFile(target, "#!/bin/sh\n", { mode: 0o755 });
+    const stable = join(home, "node-alias");
+    await symlink(target, stable);
+    const result = await setUp(["init", "--repair", "--node-path", stable], {
+      execPath: join(
+        home,
+        ".nvm",
+        "versions",
+        "node",
+        "v24.1.0",
+        "bin",
+        "node",
+      ),
+    });
+
+    expect(result.code).toBe(EXIT.ok);
+    expect(result.out).toContain(`interpreter  ${stable}`);
+    const scheduler = createLaunchdScheduler({
+      runner: installs,
+      home,
+      uid: 501,
+      launcherPath: join(
+        home,
+        ".local",
+        "share",
+        "agent-waker",
+        "bin",
+        "agent-waker-runner",
+      ),
+    });
+    expect(await scheduler.inspect()).toMatchObject({
+      nodePath: stable,
+      stalePath: false,
+      nodeManagedByNvm: false,
+    });
+    expect(await configFile()).toBe(configBefore);
+    await expect(stateFile()).rejects.toThrow();
+  });
+
+  it("does not replace a schedule with a Node process that was killed", async () => {
+    await writeConfig();
+    const initial = await setUp(["init", "--agents", "none"], {
+      now: at("06:00"),
+    });
+    expect(initial.code).toBe(EXIT.ok);
+    const launcherPath = join(
+      home,
+      ".local",
+      "share",
+      "agent-waker",
+      "bin",
+      "agent-waker-runner",
+    );
+    const before = await readFile(launcherPath, "utf8");
+    const runner: ProcessRunner = {
+      run: async (spec) => ({
+        ...(await installs.run(spec)),
+        signal: "SIGTERM",
+      }),
+    };
+
+    const { code, err } = await setUp(
+      ["init", "--repair", "--node-path", join(home, "stable-node")],
+      { runner },
+    );
+    expect(code).toBe(EXIT.failed);
+    expect(err).toContain("Not a usable stable Node >=24 interpreter");
+    expect(await readFile(launcherPath, "utf8")).toBe(before);
+  });
+
+  it("explains the stable Node prerequisite on an nvm-only host without rewriting the schedule", async () => {
+    const nodePath = join(
+      home,
+      "custom-nvm",
+      "versions",
+      "node",
+      "v24.1.0",
+      "bin",
+      "node",
+    );
+    await mkdir(join(nodePath, ".."), { recursive: true });
+    await writeFile(nodePath, "#!/bin/sh\n", { mode: 0o755 });
+    expect(
+      (
+        await setUp(["init", "--agents", "none"], {
+          execPath: nodePath,
+          now: at("06:00"),
+        })
+      ).code,
+    ).toBe(EXIT.ok);
+    const launcherPath = join(
+      home,
+      ".local",
+      "share",
+      "agent-waker",
+      "bin",
+      "agent-waker-runner",
+    );
+    const before = await readFile(launcherPath, "utf8");
+    const configBefore = await configFile();
+    const runner: ProcessRunner = {
+      run: async (spec) => ({
+        ...(await installs.run(spec)),
+        stdout: "v23.11.0\n",
+      }),
+    };
+
+    const { code, err } = await setUp(["init", "--repair"], {
+      execPath: nodePath,
+      env: { PATH: join(nodePath, "..") },
+      runner,
+    });
+    expect(code).toBe(EXIT.failed);
+    expect(err).toContain("No stable Node >=24 interpreter was found");
+    expect(err).toContain("brew install node@24");
+    expect(err).toContain("--node-path");
+    expect(await readFile(launcherPath, "utf8")).toBe(before);
+    expect(await configFile()).toBe(configBefore);
+    await expect(stateFile()).rejects.toThrow();
+  });
+
+  it("discovers a stable interpreter on PATH when the running interpreter is nvm-managed", async () => {
+    const stableDir = join(home, "stable-bin");
+    await mkdir(stableDir);
+    const stable = join(stableDir, "node");
+    await writeFile(stable, "#!/bin/sh\n", { mode: 0o755 });
+    const { code, out } = await setUp(["init", "--repair"], {
+      execPath: join(
+        home,
+        ".nvm",
+        "versions",
+        "node",
+        "v24.1.0",
+        "bin",
+        "node",
+      ),
+      env: { PATH: stableDir },
+    });
+    expect(code).toBe(EXIT.ok);
+    expect(out).toContain(`interpreter  ${stable}`);
+  });
+
+  it("runs the repaired launcher after the old nvm installation is removed", async () => {
+    // An isolated installed runtime fixture; production never copies Node.
+    const stableDir = join(home, "stable-bin");
+    await mkdir(stableDir);
+    const stable = join(stableDir, "node");
+    await copyFile(process.execPath, stable);
+    await chmod(stable, 0o755);
+    const nvmRoot = join(home, "custom-nvm");
+    const oldNode = join(nvmRoot, "versions", "node", "v24.1.0", "bin", "node");
+    await mkdir(join(oldNode, ".."), { recursive: true });
+    await symlink(stable, oldNode);
+    const entrypoint = join(home, "tick-fixture.mjs");
+    await writeFile(entrypoint, 'console.log("scheduled " + process.argv[2]);');
+    const realRunner = createProcessRunner({
+      env: { HOME: home, PATH: "/usr/bin:/bin" },
+    });
+    const runner: ProcessRunner = {
+      run: (spec) =>
+        spec.args[0] === "--version"
+          ? realRunner.run(spec)
+          : installs.run(spec),
+    };
+    const repaired = await invoke(["init", "--repair"], {
+      runner,
+      execPath: oldNode,
+      entrypoint,
+      env: { PATH: stableDir },
+    });
+    expect(repaired.code).toBe(EXIT.ok);
+    await rm(nvmRoot, { recursive: true });
+
+    const launched = await realRunner.run({
+      executable: "/bin/sh",
+      args: [
+        join(
+          home,
+          ".local",
+          "share",
+          "agent-waker",
+          "bin",
+          "agent-waker-runner",
+        ),
+      ],
+      timeoutMs: 10_000,
+    });
+    expect(launched.exitCode).toBe(0);
+    expect(launched.stdout.trim()).toBe("scheduled tick");
+  });
+
+  it("accepts an inline interpreter path containing an equals sign", async () => {
+    const nodePath = join(home, "stable=node");
+    await writeFile(nodePath, "#!/bin/sh\n", { mode: 0o755 });
+    expect(
+      (await setUp(["init", "--repair", `--node-path=${nodePath}`])).code,
+    ).toBe(EXIT.ok);
+  });
+
+  it("warns when interpreter repair still leaves agent waker installed under nvm", async () => {
+    const entrypoint = join(
+      home,
+      ".nvm",
+      "versions",
+      "node",
+      "v24.1.0",
+      "lib",
+      "node_modules",
+      "agent-waker",
+      "bin.js",
+    );
+    await mkdir(join(entrypoint, ".."), { recursive: true });
+    await writeFile(entrypoint, "");
+    const { code, out } = await setUp(["init", "--repair"], { entrypoint });
+    expect(code).toBe(EXIT.ok);
+    expect(out).toContain("entry point still lives under an nvm version");
+    expect(out).toContain(
+      "Reinstall agent waker using the stable Node installation",
+    );
+  });
+
+  it.each([
+    { name: "old version", result: { stdout: "v23.11.0\n" } },
+    { name: "invalid version", result: { stdout: "node version 24\n" } },
+    { name: "timeout", result: { timedOut: true } },
+    { name: "start failure", result: { startFailure: "ENOENT" } },
+    { name: "failed probe", result: { exitCode: 1 } },
+    {
+      name: "truncated output",
+      result: { truncated: { stdout: true, stderr: false } },
+    },
+  ])("refuses $name before changing the scheduler", async ({ result }) => {
+    await setUp(["init", "--agents", "none"], { now: at("06:00") });
+    const launcherPath = join(
+      home,
+      ".local",
+      "share",
+      "agent-waker",
+      "bin",
+      "agent-waker-runner",
+    );
+    const before = await readFile(launcherPath, "utf8");
+    const runner: ProcessRunner = {
+      run: async (spec) => ({ ...(await installs.run(spec)), ...result }),
+    };
+    expect(
+      (
+        await setUp(
+          ["init", "--repair", "--node-path", join(home, "stable-node")],
+          { runner },
+        )
+      ).code,
+    ).toBe(EXIT.failed);
+    expect(await readFile(launcherPath, "utf8")).toBe(before);
+  });
+
+  it("refuses a stable-looking symlink whose interpreter is under a custom nvm root", async () => {
+    const nodePath = join(
+      home,
+      "custom-nvm",
+      "versions",
+      "node",
+      "v24.1.0",
+      "bin",
+      "node",
+    );
+    await mkdir(join(nodePath, ".."), { recursive: true });
+    await writeFile(nodePath, "#!/bin/sh\n", { mode: 0o755 });
+    const alias = join(home, "node-alias");
+    await symlink(nodePath, alias);
+    expect((await setUp(["init", "--repair", "--node-path", alias])).code).toBe(
+      EXIT.failed,
+    );
+    await expect(stat(join(home, "Library", "LaunchAgents"))).rejects.toThrow();
+  });
 
   it("records the resolved XDG locations when installing and repairing", async () => {
     const env = {
