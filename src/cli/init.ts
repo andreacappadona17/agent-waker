@@ -10,8 +10,9 @@
  * because the next thing a user does is open it.
  */
 
-import { readFile } from "node:fs/promises";
-import { dirname } from "node:path";
+import { constants } from "node:fs";
+import { access, readFile, realpath, stat } from "node:fs/promises";
+import { dirname, isAbsolute, join } from "node:path";
 
 import { schedulerFor, type CommandContext } from "#src/cli/context.js";
 import { renderDetection, surveyAgents } from "#src/cli/detect.js";
@@ -30,6 +31,8 @@ import {
   parseTimeZone,
 } from "#src/core/time.js";
 import { writeAtomic } from "#src/state/atomic.js";
+import { isNvmNodePath } from "#src/process/discovery.js";
+import { TIMEOUTS } from "#src/process/runner.js";
 
 const CONFIG_MODE = 0o600;
 const DEFAULT_NOT_BEFORE = "07:00";
@@ -186,9 +189,12 @@ async function askOr(
 }
 
 /** Rebuilds the scheduler from the paths that are true right now. */
-async function installScheduler(context: CommandContext): Promise<void> {
+async function installScheduler(
+  context: CommandContext,
+  nodePath = context.environment.execPath,
+): Promise<void> {
   await schedulerFor(context).install({
-    nodePath: context.environment.execPath,
+    nodePath,
     entrypoint: context.environment.entrypoint,
     intervalSeconds: TICK_INTERVAL_SECONDS,
     logDirectory: context.paths.logDir,
@@ -201,6 +207,79 @@ async function installScheduler(context: CommandContext): Promise<void> {
   });
 }
 
+/** Keep logical stable aliases; resolving them into a Cellar pins a version. */
+async function stableNodePath(
+  context: CommandContext,
+  requested?: string,
+): Promise<string> {
+  const candidates =
+    requested === undefined
+      ? [
+          context.environment.execPath,
+          ...(context.environment.env.PATH ?? "")
+            .split(":")
+            .filter(isAbsolute)
+            .map((directory) => join(directory, "node")),
+          "/opt/homebrew/bin/node",
+          "/opt/homebrew/opt/node/bin/node",
+          "/opt/homebrew/opt/node@24/bin/node",
+          "/usr/local/bin/node",
+          "/usr/local/opt/node/bin/node",
+          "/usr/local/opt/node@24/bin/node",
+          "/usr/bin/node",
+        ]
+      : [requested];
+
+  for (const candidate of new Set(candidates)) {
+    if (!isAbsolute(candidate) || candidate.includes("/Cellar/")) continue;
+    const target = await realpath(candidate).catch(() => undefined);
+    if (
+      target === undefined ||
+      isNvmNodePath(candidate) ||
+      isNvmNodePath(target)
+    )
+      continue;
+    if (!(await stat(candidate).catch(() => undefined))?.isFile()) continue;
+    if (
+      !(await access(candidate, constants.X_OK).then(
+        () => true,
+        () => false,
+      ))
+    )
+      continue;
+    const result = await context.runner.run({
+      executable: candidate,
+      args: ["--version"],
+      timeoutMs: TIMEOUTS.detect,
+      maxStdoutBytes: 256,
+      maxStderrBytes: 256,
+    });
+    const major = /^v(\d+)\.\d+\.\d+$/.exec(result.stdout.trim())?.[1];
+    if (
+      result.exitCode === 0 &&
+      result.signal === null &&
+      !result.timedOut &&
+      result.startFailure === undefined &&
+      !result.truncated.stdout &&
+      major !== undefined &&
+      Number(major) >= 24
+    )
+      return candidate;
+  }
+
+  throw new Error(
+    [
+      requested === undefined
+        ? "No stable Node >=24 interpreter was found."
+        : `Not a usable stable Node >=24 interpreter: ${requested}`,
+      "An nvm version path (including a symlink to it) can disappear after an upgrade.",
+      "Install Node >=24 through a stable installation, for example `brew install node@24`,",
+      "then run `agent-waker init --repair --node-path /opt/homebrew/opt/node@24/bin/node`",
+      "(use /usr/local/opt/node@24/bin/node for Intel Homebrew, or your stable installation path).",
+    ].join("\n"),
+  );
+}
+
 /**
  * `init --repair`: the configuration is fine, the scheduler is not.
  *
@@ -209,20 +288,49 @@ async function installScheduler(context: CommandContext): Promise<void> {
  */
 export async function repairCommand(
   context: CommandContext,
+  requestedNodePath?: string,
 ): Promise<ExitCode> {
-  await installScheduler(context);
+  const nodePath = await stableNodePath(context, requestedNodePath);
+  if (
+    !isAbsolute(context.environment.entrypoint) ||
+    !(
+      await stat(context.environment.entrypoint).catch(() => undefined)
+    )?.isFile() ||
+    !(await access(context.environment.entrypoint, constants.R_OK).then(
+      () => true,
+      () => false,
+    ))
+  ) {
+    throw new Error(
+      "The current agent waker entry point is missing or unreadable. Reinstall agent waker, then run `agent-waker init --repair`.",
+    );
+  }
+  await installScheduler(context, nodePath);
 
   context.environment.write(
     [
       "Scheduler reinstalled.",
       "",
-      `  interpreter  ${context.environment.execPath}`,
+      `  interpreter  ${nodePath}`,
       `  entry point  ${context.environment.entrypoint}`,
       "",
       "Check it with: agent-waker doctor",
       "",
     ].join("\n"),
   );
+
+  if (
+    isNvmNodePath(context.environment.entrypoint) ||
+    isNvmNodePath(
+      await realpath(context.environment.entrypoint).catch(
+        () => context.environment.entrypoint,
+      ),
+    )
+  ) {
+    context.environment.write(
+      "The entry point still lives under an nvm version. Reinstall agent waker using the stable Node installation, then run `agent-waker init --repair` before removing that nvm version.\n",
+    );
+  }
 
   return EXIT.ok;
 }
@@ -258,6 +366,7 @@ async function writeChoices(
 }
 
 export interface InitOptions {
+  readonly nodePath?: string;
   readonly time?: string;
   readonly timezone?: string;
   /**
@@ -274,6 +383,10 @@ export async function initCommand(
   options: InitOptions,
 ): Promise<ExitCode> {
   const { environment } = context;
+  const nodePath =
+    options.nodePath === undefined
+      ? environment.execPath
+      : await stableNodePath(context, options.nodePath);
 
   environment.write(WELCOME);
 
@@ -343,9 +456,17 @@ export async function initCommand(
     await readFile(context.paths.config, "utf8").catch(() => undefined),
     { timezone, notBefore, enabled },
   );
-  await installScheduler(context);
+  await installScheduler(context, nodePath);
 
   environment.write(SCHEDULER_NOTE);
+  if (
+    isNvmNodePath(nodePath) ||
+    isNvmNodePath(await realpath(nodePath).catch(() => nodePath))
+  ) {
+    environment.write(
+      "This schedule uses a version-specific nvm interpreter. Before removing that Node version, run `agent-waker init --repair` with a stable Node >=24 installation.\n\n",
+    );
+  }
 
   // Re-read and re-parse: `context.config` was loaded before this command
   // wrote the file, so it still says what was true a moment ago. Reporting

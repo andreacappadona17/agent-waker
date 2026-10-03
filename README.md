@@ -105,11 +105,26 @@ agent-waker init                   # asks which agents, and from what time
 agent-waker init --agents claude --time 07:00 --timezone Europe/Rome
 ```
 
-**The scheduler remembers which Node ran it.** `init` records the interpreter
-and the entry-point path in the LaunchAgent, so removing or replacing that Node
-— switching versions under `nvm` is the usual way — leaves a schedule pointing
-at a file that is no longer there. `agent-waker doctor` says so, and
-`agent-waker init --repair` rebuilds it from wherever things live now.
+**Check the schedule before removing an nvm version.** `agent-waker doctor`
+checks the recorded interpreter and entry point, and warns about version-specific
+nvm paths while they still work. `agent-waker init --repair` selects and verifies
+a stable Node >=24 installation, keeping its stable alias across upgrades.
+It changes only the schedule, preserving your configuration and activation state.
+
+If only nvm Node is installed, repair leaves the schedule untouched and explains
+the prerequisite. For example, with Apple Silicon Homebrew:
+
+```bash
+brew install node@24
+agent-waker init --repair --node-path /opt/homebrew/opt/node@24/bin/node
+```
+
+Intel Homebrew uses `/usr/local/opt/node@24/bin/node`; another stable installation
+can be supplied with `--node-path`. A symlink back into an nvm version is refused.
+If agent waker itself was installed globally under nvm, reinstall it using the
+stable Node installation and run repair before removing the old nvm version.
+Repair reports a missing entry point and does not reinstall the package for you.
+
 `agent-waker uninstall` removes the schedule, the configuration and the state,
 and touches none of your agents.
 

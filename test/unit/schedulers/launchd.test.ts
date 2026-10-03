@@ -5,6 +5,7 @@ import {
   readFile,
   rm,
   stat,
+  symlink,
   writeFile,
   mkdir,
 } from "node:fs/promises";
@@ -376,6 +377,22 @@ describe("install", () => {
 });
 
 describe("inspect", () => {
+  it("reports a missing recorded interpreter even while the launcher remains", async () => {
+    const { runner } = recording();
+    const scheduler = createLaunchdScheduler({
+      runner,
+      home,
+      uid: 501,
+      launcherPath: launcherPath(),
+    });
+    const nodePath = join(home, "removed-node");
+    await scheduler.install({ ...installConfig, nodePath });
+
+    expect(await scheduler.inspect()).toMatchObject({
+      stalePath: true,
+      nodePath,
+    });
+  });
   it("reports nothing installed on a clean machine", async () => {
     const { runner } = recording();
 
@@ -452,9 +469,114 @@ describe("inspect", () => {
       launcherPath: launcherPath(),
     });
 
-    await scheduler.install(installConfig);
+    const entrypoint = join(home, "entry.js");
+    await writeFile(entrypoint, "");
+    await scheduler.install({
+      ...installConfig,
+      nodePath: process.execPath,
+      entrypoint,
+    });
 
     expect((await scheduler.inspect()).stalePath).toBe(false);
+  });
+
+  it("warns about a live nvm interpreter before its version is removed", async () => {
+    const { runner } = recording();
+    const scheduler = createLaunchdScheduler({
+      runner,
+      home,
+      uid: 501,
+      launcherPath: launcherPath(),
+    });
+    const nodePath = join(
+      home,
+      "custom-nvm",
+      "versions",
+      "node",
+      "v24.1.0",
+      "bin",
+      "node",
+    );
+    await mkdir(join(nodePath, ".."), { recursive: true });
+    await writeFile(nodePath, "#!/bin/sh\n", { mode: 0o755 });
+    const entrypoint = join(home, "entry.js");
+    await writeFile(entrypoint, "");
+    await scheduler.install({ ...installConfig, nodePath, entrypoint });
+
+    expect(await scheduler.inspect()).toMatchObject({
+      stalePath: false,
+      nodePath,
+      nodeManagedByNvm: true,
+    });
+  });
+
+  it("warns about recorded nvm paths even if their symlink targets live elsewhere", async () => {
+    const { runner } = recording();
+    const scheduler = createLaunchdScheduler({
+      runner,
+      home,
+      uid: 501,
+      launcherPath: launcherPath(),
+    });
+    const root = join(home, "custom-nvm", "versions", "node", "v24.1.0");
+    await mkdir(root, { recursive: true });
+    const stable = join(home, "stable-node");
+    await writeFile(stable, "#!/bin/sh\n", { mode: 0o755 });
+    const stableEntry = join(home, "entry.js");
+    await writeFile(stableEntry, "");
+    const nodePath = join(root, "node");
+    const entrypoint = join(root, "entry.js");
+    await symlink(stable, nodePath);
+    await symlink(stableEntry, entrypoint);
+    await scheduler.install({ ...installConfig, nodePath, entrypoint });
+    expect(await scheduler.inspect()).toMatchObject({
+      stalePath: false,
+      nodeManagedByNvm: true,
+      entrypointManagedByNvm: true,
+    });
+  });
+
+  it("inspects recorded paths with spaces, apostrophes, and line breaks without evaluating shell text", async () => {
+    const { runner } = recording();
+    const scheduler = createLaunchdScheduler({
+      runner,
+      home,
+      uid: 501,
+      launcherPath: launcherPath(),
+    });
+    const entrypoint = join(home, "entry's space\nline.js");
+    await writeFile(entrypoint, "");
+    await scheduler.install({
+      ...installConfig,
+      nodePath: process.execPath,
+      entrypoint,
+    });
+    expect(await scheduler.inspect()).toMatchObject({
+      stalePath: false,
+      nodePath: process.execPath,
+      entrypoint,
+    });
+  });
+
+  it("reports a malformed launcher without executing its assignments", async () => {
+    const { runner } = recording();
+    const scheduler = createLaunchdScheduler({
+      runner,
+      home,
+      uid: 501,
+      launcherPath: launcherPath(),
+    });
+    await scheduler.install(installConfig);
+    const marker = join(home, "must-not-exist");
+    await writeFile(
+      launcherPath(),
+      `#!/bin/sh\nNODE=$(touch '${marker}')\nENTRY='/entry.js'\n`,
+    );
+    expect(await scheduler.inspect()).toMatchObject({
+      stalePath: true,
+      staleReason: "launcher",
+    });
+    expect(existsSync(marker)).toBe(false);
   });
 });
 

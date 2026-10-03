@@ -38,6 +38,7 @@ Options:
   --time <hh:mm>          With init, the desired activation time
   --agents <list>         With init, which agents to manage
   --repair                With init, rebuild the scheduler only
+  --node-path <path>      With init, use a stable Node >=24 interpreter
   --logs                  With uninstall, remove the logs too
   --debug                 With logs, the raw records rather than a summary
   -y, --yes               Do not ask for confirmation
@@ -63,7 +64,13 @@ planned and not in this build.
 const AGENT_COMMANDS = new Set(["run", "enable", "disable", "doctor", "logs"]);
 
 /** Options that consume the argument after them. */
-const VALUE_OPTIONS = new Set(["--timezone", "--limit", "--time", "--agents"]);
+const VALUE_OPTIONS = new Set([
+  "--timezone",
+  "--limit",
+  "--time",
+  "--agents",
+  "--node-path",
+]);
 
 /** Flags that are options rather than mistakes. */
 const KNOWN_FLAGS = new Set(["--repair", "--logs", "--debug", "-y", "--yes"]);
@@ -116,9 +123,9 @@ export function parseArguments(argv: readonly string[]): ParsedCommand {
       continue;
     }
 
-    const [name = argument, inline] = argument.includes("=")
-      ? argument.split("=", 2)
-      : [argument, undefined];
+    const equals = argument.indexOf("=");
+    const name = equals < 0 ? argument : argument.slice(0, equals);
+    const inline = equals < 0 ? undefined : argument.slice(equals + 1);
 
     if (!VALUE_OPTIONS.has(name)) {
       flags.add(argument);
@@ -203,6 +210,11 @@ export async function run(environment: CliEnvironment): Promise<ExitCode> {
     (flag) => !KNOWN_FLAGS.has(flag),
   );
 
+  if (parsed.options.has("--node-path") && parsed.command !== "init") {
+    environment.writeError("--node-path is only supported with init.\n");
+    return EXIT.usage;
+  }
+
   if (unknownFlag !== undefined) {
     environment.writeError(
       `Unknown option "${unknownFlag}". Run \`agent-waker help\`.\n`,
@@ -250,11 +262,12 @@ export async function run(environment: CliEnvironment): Promise<ExitCode> {
       case "init": {
         const { initCommand, repairCommand } = await import("#src/cli/init.js");
         return parsed.flags.has("--repair")
-          ? await repairCommand(context)
+          ? await repairCommand(context, parsed.options.get("--node-path"))
           : await initCommand(context, {
               ...toOption("time", parsed.options.get("--time")),
               ...toOption("timezone", parsed.options.get("--timezone")),
               ...toOption("agents", parsed.options.get("--agents")),
+              ...toOption("nodePath", parsed.options.get("--node-path")),
             });
       }
       case "uninstall": {

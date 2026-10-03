@@ -78,7 +78,7 @@ async function hasShebang(path: string): Promise<boolean> {
 }
 
 async function hintFor(realPath: string): Promise<InstallHint> {
-  if (realPath.includes("/.nvm/versions/node/")) return "nvm";
+  if (isNvmNodePath(realPath)) return "nvm";
   if (realPath.includes("/node_modules/")) return "npm";
   if (realPath.includes("/homebrew/") || realPath.includes("/Cellar/")) {
     return "homebrew";
@@ -86,6 +86,11 @@ async function hintFor(realPath: string): Promise<InstallHint> {
 
   // Nothing interprets a plain binary, so nothing else can go missing under it.
   return (await hasShebang(realPath)) ? "unknown" : "native";
+}
+
+/** nvm allows a custom root, but its version-directory layout is fixed. */
+export function isNvmNodePath(path: string): boolean {
+  return /\/versions\/node\/v\d+\.\d+\.\d+\//.test(path);
 }
 
 async function candidateAt(

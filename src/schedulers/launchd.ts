@@ -13,10 +13,21 @@
  * failing silently every minute.
  */
 
-import { chmod, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { constants } from "node:fs";
+import {
+  access,
+  chmod,
+  mkdir,
+  readFile,
+  realpath,
+  rm,
+  stat,
+  writeFile,
+} from "node:fs/promises";
 import { dirname, join } from "node:path";
 
 import { TIMEOUTS, type ProcessRunner } from "#src/process/runner.js";
+import { isNvmNodePath } from "#src/process/discovery.js";
 import type {
   SchedulerDriver,
   SchedulerInstallConfig,
@@ -107,6 +118,36 @@ ${args}
 /** Quotes a path for `/bin/sh`, which is the only escaping this script needs. */
 function shellQuote(value: string): string {
   return `'${value.replaceAll("'", `'\\''`)}'`;
+}
+
+/** Read only the literal assignments we generate; never evaluate a shell. */
+function recordedPath(
+  launcher: string,
+  name: "NODE" | "ENTRY",
+): string | undefined {
+  const quoted = new RegExp(
+    String.raw`^${name}=('(?:[^']|'\\'')*')$`,
+    "m",
+  ).exec(launcher)?.[1];
+  if (quoted === undefined) return undefined;
+  const value = quoted.slice(1, -1).replaceAll("'\\''", "'");
+  return shellQuote(value) === quoted && value.startsWith("/")
+    ? value
+    : undefined;
+}
+
+async function usableFile(
+  path: string | undefined,
+  executable = false,
+): Promise<boolean> {
+  if (path === undefined) return false;
+  try {
+    if (!(await stat(path)).isFile()) return false;
+    await access(path, executable ? constants.X_OK : constants.R_OK);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -243,17 +284,44 @@ export function createLaunchdScheduler(
         )?.[1];
       // The plist names a launcher; if that file is gone the job is installed
       // and broken, which is a different thing from not installed.
-      const launcherPresent = await readFile(launcherPath, "utf8").then(
-        () => true,
-        () => false,
-      );
+      const launcher = await readFile(launcherPath, "utf8").catch(() => "");
+      const nodePath = recordedPath(launcher, "NODE");
+      const entrypoint = recordedPath(launcher, "ENTRY");
+      const resolvedNode =
+        nodePath === undefined
+          ? ""
+          : await realpath(nodePath).catch(() => nodePath);
+      const resolvedEntry =
+        entrypoint === undefined
+          ? ""
+          : await realpath(entrypoint).catch(() => entrypoint);
+      const usable = await Promise.all([
+        usableFile(launcherPath, true),
+        usableFile(nodePath, true),
+        usableFile(entrypoint),
+      ]);
+      const staleReason =
+        !usable[0] || nodePath === undefined || entrypoint === undefined
+          ? "launcher"
+          : !usable[1]
+            ? "node"
+            : !usable[2]
+              ? "entrypoint"
+              : undefined;
 
       return {
         installed: true,
         loaded: printed.exitCode === 0,
-        stalePath: !launcherPresent,
+        stalePath: usable.includes(false),
+        ...(staleReason === undefined ? {} : { staleReason }),
         jobPath: plistPath,
         launcherPath,
+        ...(nodePath === undefined ? {} : { nodePath }),
+        ...(entrypoint === undefined ? {} : { entrypoint }),
+        nodeManagedByNvm:
+          isNvmNodePath(nodePath ?? "") || isNvmNodePath(resolvedNode),
+        entrypointManagedByNvm:
+          isNvmNodePath(entrypoint ?? "") || isNvmNodePath(resolvedEntry),
         ...(interval === undefined
           ? {}
           : { intervalSeconds: Number(interval) }),
