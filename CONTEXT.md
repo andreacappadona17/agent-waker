@@ -1,7 +1,8 @@
 # agent waker
 
 Aligns coding-agent subscription usage windows with when you actually start
-work, by making one minimal activation per agent as early as you asked for it.
+work, by making one minimal activation per agent per configured activation
+window, as early as you asked for it.
 
 ## Agents and providers
 
@@ -24,8 +25,8 @@ _Avoid_: driver, plugin, connector
 ## Activation
 
 **Activation**:
-The single minimal interaction that establishes an agent's session for the day
-and opens its usage window.
+One individual minimal interaction that establishes an agent's session and
+opens the provider's usage Window.
 _Avoid_: warmup, ping, keep-alive
 
 **Probe**:
@@ -38,12 +39,20 @@ A fact an adapter reports from a probe or activation ("blocked, rolling window,
 resets at 08:23"), never a decision about what to do next.
 _Avoid_: result, verdict, status
 
-## The daily cycle
+## Daily cycles
 
-**Cycle** (daily cycle):
-One agent's once-per-local-day activation lifecycle. Opens at the desired
-activation time, not midnight; completes on one successful activation.
+**Cycle** (daily activation cycle):
+One agent's activation lifecycle for one configured activation window on one
+local date. It opens at that window's desired activation time, not midnight,
+and completes on one successful activation. Each configured activation window
+has its own Cycle, so an agent can have multiple Cycles on one local date.
 _Avoid_: run, day
+
+**Activation window** (configured activation window):
+One daily activation time configured by the user. It identifies a distinct
+Cycle for each agent and local date. This is agent waker's schedule concept,
+not the provider's usage Window.
+_Avoid_: usage window
 
 **Tick**:
 One short-lived pass of the scheduler: read the clock, load state, evaluate due
@@ -56,8 +65,8 @@ its state-machine position.
 _Avoid_: status, mode
 
 **Desired activation time** (`notBefore`):
-The earliest local wall-clock time a user wants an agent usable — a floor, not
-a promise of an exact time.
+The earliest local wall-clock time a user wants an agent usable for a
+configured activation window — a floor, not a promise of an exact time.
 _Avoid_: start time, deadline
 
 ## Blocks, resets and waiting
