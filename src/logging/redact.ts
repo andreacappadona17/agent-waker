@@ -30,16 +30,16 @@ const SECRET_VARIABLE_PATTERN = /token|secret|key|password|credential/i;
 // Bearer is handled first so the token after it is masked even when the token
 // itself matches nothing else.
 const PATTERNS: readonly RegExp[] = [
-  /\bBearer\s+[\w.~+/=-]{16,}/gi,
+  /Bearer(?:\s|\\[tnrf]|\\u000b)+[\w.~+/=-]{16,}/gi,
   // Anthropic: api03 keys and the long-lived tokens `claude setup-token` mints.
-  /\bsk-ant-[\w-]{20,}/g,
+  /sk-ant-[\w-]{20,}/g,
   // OpenAI, including the sk-proj- form Codex uses.
-  /\bsk-[A-Za-z0-9_-]{20,}/g,
+  /sk-[A-Za-z0-9_-]{20,}/g,
   // GitHub classic, and the fine-grained personal access token.
-  /\bgh[pousr]_[A-Za-z0-9]{20,}/g,
-  /\bgithub_pat_[A-Za-z0-9_]{20,}/g,
+  /gh[pousr]_[A-Za-z0-9]{20,}/g,
+  /github_pat_[A-Za-z0-9_]{20,}/g,
   // A JSON web token, which is what an OAuth flow hands back.
-  /\beyJ[\w-]{8,}\.[\w-]{8,}\.[\w-]{8,}/g,
+  /eyJ[\w-]{8,}\.[\w-]{8,}\.[\w-]{8,}/g,
 ];
 
 function maskPatterns(text: string): string {
@@ -62,6 +62,7 @@ function maskKnown(text: string, secrets: readonly string[]): string {
   // and it was never subject to it.
   return secrets
     .filter((secret) => secret.trim().length >= MIN_SECRET_LENGTH)
+    .flatMap((secret) => [secret, JSON.stringify(secret).slice(1, -1)])
     .reduce(
       // split/join rather than a regex: an environment value can contain any
       // character, and building a pattern out of it would either break or match
