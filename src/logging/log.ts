@@ -112,7 +112,7 @@ export function createEventLog(options: EventLogOptions): EventLog {
       const record = {
         timestamp: new Date(event.timestamp).toISOString(),
         level: event.level,
-        event: event.event,
+        event: redactValue(event.event, secrets),
         ...(event.agent === undefined ? {} : { agent: event.agent }),
         runtime: event.runtime,
         fields: redactValue({ ...event.fields }, secrets),

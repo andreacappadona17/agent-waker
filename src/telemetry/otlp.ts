@@ -273,7 +273,7 @@ export function createTelemetry(options: TelemetryOptions): Telemetry {
       traceId,
       spanId,
       ...(parentSpanId === undefined ? {} : { parentSpanId }),
-      name,
+      name: redact(name),
       kind: SPAN_KIND_INTERNAL,
       startTimeUnixNano: nanos(now()),
       attributes: attributesOf(given),
