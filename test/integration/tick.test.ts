@@ -528,7 +528,10 @@ describe("probe modes", () => {
       config: config(),
       store,
       registry: createRegistry([
-        { ...base, capabilities: { probeMode: "separate" } },
+        {
+          ...base,
+          capabilities: { ...base.capabilities, probeMode: "separate" },
+        },
         createFakeAdapter("codex"),
       ]),
       log: createEventLog({ directory: join(directory, "logs") }),

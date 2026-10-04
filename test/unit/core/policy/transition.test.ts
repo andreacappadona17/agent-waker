@@ -23,6 +23,12 @@ const at = (localTime: string): number =>
 /** The state after the cycle opens and before anything has been observed. */
 const ready: AgentState = { phase: "ready", cycleDate: "2026-09-07" };
 
+const capabilities = {
+  probeMode: "separate",
+  exactReset: true,
+  weeklyLimitDetection: true,
+} as const;
+
 describe("applyObservation", () => {
   describe("a successful activation", () => {
     const activated = applyObservation(
@@ -30,6 +36,7 @@ describe("applyObservation", () => {
       ready,
       { kind: "activated" },
       at("07:00"),
+      capabilities,
     );
 
     it("completes the daily cycle", () => {
@@ -65,6 +72,7 @@ describe("applyObservation", () => {
           afterRetries,
           { kind: "activated" },
           at("09:00"),
+          capabilities,
         ),
       ).toEqual({
         phase: "activated",
@@ -85,6 +93,7 @@ describe("applyObservation", () => {
         ready,
         { kind: "available" },
         at("07:00"),
+        capabilities,
       );
 
       expect(next.phase).toBe("ready");
@@ -101,7 +110,13 @@ describe("applyObservation", () => {
         { type: "rolling_window", resetAt: at("08:23"), confidence: "high" },
       ],
     };
-    const next = applyObservation(config, ready, observation, at("07:00"));
+    const next = applyObservation(
+      config,
+      ready,
+      observation,
+      at("07:00"),
+      capabilities,
+    );
 
     it("waits until the reset plus the grace", () => {
       // Scenario B.
@@ -144,6 +159,7 @@ describe("applyObservation", () => {
             ],
           },
           at("07:00"),
+          capabilities,
         ),
       ).toMatchObject({
         phase: "waiting_known_reset",
@@ -171,6 +187,7 @@ describe("applyObservation", () => {
             ],
           },
           at("07:00"),
+          capabilities,
         ),
       ).toMatchObject({
         phase: "waiting_unknown_reset",
@@ -188,18 +205,18 @@ describe("applyObservation", () => {
 
     it("starts the staged backoff and records the horizon", () => {
       // Scenario C.
-      expect(applyObservation(config, ready, observation, at("07:00"))).toEqual(
-        {
-          phase: "waiting_unknown_reset",
-          cycleDate: "2026-09-07",
-          firstAttemptAt: at("07:00"),
-          lastAttemptAt: at("07:00"),
-          nextAttemptAt: at("07:05"),
-          retryIndex: 1,
-          retryHorizonEndsAt: at("12:00"),
-          reason: "rolling_window",
-        },
-      );
+      expect(
+        applyObservation(config, ready, observation, at("07:00"), capabilities),
+      ).toEqual({
+        phase: "waiting_unknown_reset",
+        cycleDate: "2026-09-07",
+        firstAttemptAt: at("07:00"),
+        lastAttemptAt: at("07:00"),
+        nextAttemptAt: at("07:05"),
+        retryIndex: 1,
+        retryHorizonEndsAt: at("12:00"),
+        reason: "rolling_window",
+      });
     });
 
     it("walks the whole ladder to the horizon and then gives up", () => {
@@ -217,7 +234,13 @@ describe("applyObservation", () => {
       let state = ready;
 
       for (const [now, nextAttempt] of expected) {
-        state = applyObservation(config, state, observation, at(now));
+        state = applyObservation(
+          config,
+          state,
+          observation,
+          at(now),
+          capabilities,
+        );
 
         expect(state).toMatchObject({
           phase: "waiting_unknown_reset",
@@ -226,7 +249,13 @@ describe("applyObservation", () => {
       }
 
       // The horizon attempt happens, and only then does it become long term.
-      state = applyObservation(config, state, observation, at("12:00"));
+      state = applyObservation(
+        config,
+        state,
+        observation,
+        at("12:00"),
+        capabilities,
+      );
 
       expect(state).toMatchObject({
         phase: "long_term_block",
@@ -246,7 +275,13 @@ describe("applyObservation", () => {
       };
 
       expect(
-        applyObservation(config, afterNetwork, observation, at("07:30")),
+        applyObservation(
+          config,
+          afterNetwork,
+          observation,
+          at("07:30"),
+          capabilities,
+        ),
       ).toMatchObject({
         phase: "waiting_unknown_reset",
         retryIndex: 1,
@@ -271,6 +306,7 @@ describe("applyObservation", () => {
             ],
           },
           at("07:00"),
+          capabilities,
         ),
       ).toMatchObject({
         phase: "waiting_unknown_reset",
@@ -298,6 +334,7 @@ describe("applyObservation", () => {
             ],
           },
           at("12:00"),
+          capabilities,
         ),
       ).toMatchObject({
         phase: "waiting_known_reset",
@@ -312,6 +349,7 @@ describe("applyObservation", () => {
       ready,
       { kind: "auth_error", state: "expired", message: "session expired" },
       at("07:00"),
+      capabilities,
     );
 
     it("asks the user rather than waiting on a quota", () => {
@@ -346,6 +384,7 @@ describe("applyObservation", () => {
         midLadder,
         { kind: "auth_error", state: "not_authenticated", message: "" },
         at("08:00"),
+        capabilities,
       );
 
       expect(interrupted.phase).toBe("auth_required");
@@ -359,6 +398,7 @@ describe("applyObservation", () => {
       ready,
       { kind: "runtime_error", category: "broken_install" },
       at("07:00"),
+      capabilities,
     );
 
     it("is reported as unhealthy", () => {
@@ -384,22 +424,28 @@ describe("applyObservation", () => {
     };
 
     it("uses its own short ladder", () => {
-      expect(applyObservation(config, ready, observation, at("07:00"))).toEqual(
-        {
-          phase: "transient_error",
-          cycleDate: "2026-09-07",
-          firstAttemptAt: at("07:00"),
-          lastAttemptAt: at("07:00"),
-          nextAttemptAt: at("07:01"),
-          retryIndex: 1,
-          reason: "network",
-        },
-      );
+      expect(
+        applyObservation(config, ready, observation, at("07:00"), capabilities),
+      ).toEqual({
+        phase: "transient_error",
+        cycleDate: "2026-09-07",
+        firstAttemptAt: at("07:00"),
+        lastAttemptAt: at("07:00"),
+        nextAttemptAt: at("07:01"),
+        retryIndex: 1,
+        reason: "network",
+      });
     });
 
     it("degrades to an hourly check rather than stopping", () => {
       const schedule = ["07:01", "07:06", "07:21", "08:21", "09:21"];
-      let state = applyObservation(config, ready, observation, at("07:00"));
+      let state = applyObservation(
+        config,
+        ready,
+        observation,
+        at("07:00"),
+        capabilities,
+      );
 
       for (const nextAttempt of schedule.slice(1)) {
         state = applyObservation(
@@ -407,6 +453,7 @@ describe("applyObservation", () => {
           state,
           observation,
           state.nextAttemptAt ?? 0,
+          capabilities,
         );
 
         expect(state.nextAttemptAt).toBe(at(nextAttempt));
@@ -421,6 +468,7 @@ describe("applyObservation", () => {
           { phase: "transient_error", cycleDate: "2026-09-07" },
           observation,
           at("07:00"),
+          capabilities,
         ),
       ).toMatchObject({ retryIndex: 1, nextAttemptAt: at("07:01") });
     });
@@ -434,6 +482,7 @@ describe("applyObservation", () => {
           ready,
           observation,
           at("07:00"),
+          capabilities,
         ),
       ).toMatchObject({
         phase: "transient_error",
@@ -443,7 +492,13 @@ describe("applyObservation", () => {
 
     it("is bounded by the daily cycle rather than by the five-hour horizon", () => {
       // Rule 6: a network failure must not be confused with provider quota.
-      const next = applyObservation(config, ready, observation, at("13:00"));
+      const next = applyObservation(
+        config,
+        ready,
+        observation,
+        at("13:00"),
+        capabilities,
+      );
 
       expect(next.phase).toBe("transient_error");
       expect(next.retryHorizonEndsAt).toBeUndefined();
@@ -458,7 +513,13 @@ describe("applyObservation", () => {
       };
 
       expect(
-        applyObservation(config, midLadder, observation, at("08:00")),
+        applyObservation(
+          config,
+          midLadder,
+          observation,
+          at("08:00"),
+          capabilities,
+        ),
       ).toMatchObject({ retryIndex: 1, nextAttemptAt: at("08:01") });
     });
   });
@@ -469,6 +530,7 @@ describe("applyObservation", () => {
       ready,
       { kind: "unknown", detail: "unrecognised output" },
       at("07:00"),
+      capabilities,
     );
 
     it("fails closed rather than guessing a reset", () => {
@@ -490,12 +552,14 @@ describe("applyObservation", () => {
       ready,
       { kind: "transient_error", category: "dns" },
       at("07:00"),
+      capabilities,
     );
     const second = applyObservation(
       config,
       first,
       { kind: "transient_error", category: "dns" },
       at("07:01"),
+      capabilities,
     );
 
     expect(second.firstAttemptAt).toBe(at("07:00"));
@@ -515,6 +579,7 @@ describe("applyObservation", () => {
           constraints: [{ type: "quota", confidence: "high" }],
         },
         at("07:00"),
+        capabilities,
       ),
     ).toMatchObject({ retryHorizonEndsAt: at("12:00") });
   });

@@ -73,12 +73,22 @@ export interface AgentCapabilities {
    * activation itself has to report blocked, auth and runtime outcomes.
    */
   readonly probeMode: "separate" | "activation_is_probe";
+  /**
+   * Whether non-low-confidence reset timestamps can suppress quota backoff.
+   * A false declaration leaves timestamps available as facts but makes core
+   * use its unknown-reset policy instead of waiting on them.
+   */
+  readonly exactReset: boolean;
+  /**
+   * Whether a weekly reason or non-low-confidence weekly constraint can skip
+   * short quota retries when there is no usable future reset. This never
+   * removes a known reset: exactReset alone governs timestamp trust.
+   */
+  readonly weeklyLimitDetection: boolean;
 }
 
-// ponytail: the requirements sketch several more capability flags — exact reset
-// support, weekly-limit detection, GitHub Actions support. None has a consumer
-// while v0.1 is macOS and local only, so they land with the command or runtime
-// that reads them.
+// ponytail: GitHub Actions support is out of scope for the local macOS runtime.
+// Add its capability with the runtime that consumes it.
 
 export interface AgentAdapter {
   readonly id: AgentId;

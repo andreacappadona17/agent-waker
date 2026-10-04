@@ -196,7 +196,11 @@ export function createClaudeAdapter(): AgentAdapter {
     displayName: "Claude Code",
     // There is no status command that reports usage, so the activation is the
     // availability check. Asking twice would cost twice.
-    capabilities: { probeMode: "activation_is_probe" },
+    capabilities: {
+      probeMode: "activation_is_probe",
+      exactReset: false,
+      weeklyLimitDetection: false,
+    },
 
     async detect(context: AdapterContext): Promise<DetectionResult> {
       return toDetection(
