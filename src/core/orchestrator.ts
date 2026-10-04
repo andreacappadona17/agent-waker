@@ -421,6 +421,12 @@ export async function tick(
           fields: {
             ...(next.reason === undefined ? {} : { reason: next.reason }),
             ...(detail === undefined ? {} : { detail }),
+            ...(observation.kind === "blocked"
+              ? {
+                  reset_source:
+                    next.blockedUntil === undefined ? "guessed" : "stated",
+                }
+              : {}),
             durationMs,
             ...(exitCode === undefined ? {} : { exitCode }),
             ...(next.nextAttemptAt === undefined

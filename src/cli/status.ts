@@ -23,6 +23,11 @@ import {
   table,
   type Colour,
 } from "#src/cli/format.js";
+import {
+  readResetConfidence,
+  resetConfidenceLabel,
+  type ResetConfidence,
+} from "#src/cli/reset-confidence.js";
 import { effectiveAgentConfig } from "#src/config/config.js";
 import { AGENT_IDS, type AgentId } from "#src/core/agent.js";
 import {
@@ -70,6 +75,7 @@ export interface StatusView extends PhaseContext {
     readonly stalePath: boolean;
   };
   readonly agents: readonly StatusAgentView[];
+  readonly resetConfidence?: ResetConfidence | undefined;
 }
 
 export interface RenderOptions {
@@ -280,6 +286,7 @@ export function renderStatus(view: StatusView, options: RenderOptions): string {
       view.timezone,
     ),
     nextAction(agent, view),
+    resetConfidenceLabel(view.resetConfidence?.[agent.agentId]),
   ]);
 
   const rendered = [
@@ -287,7 +294,11 @@ export function renderStatus(view: StatusView, options: RenderOptions): string {
     `Runtime: ${view.runtime} · ${view.platform}`,
     `Desired activation: ${view.notBefore} ${view.timezone}`,
     "",
-    table(["Agent", "State", "Last activation", "Next action"], rows),
+    table(
+      ["Agent", "State", "Last activation", "Next action", "Reset confidence"],
+      rows,
+    ),
+    "Reset confidence: retained local source evidence, not measured prediction accuracy.",
     ...details(view.agents, view),
     "",
     schedulerLine(view, options),
@@ -375,6 +386,7 @@ export async function buildStatusView(
     platform: platformName(context.environment.platform),
     scheduler: await schedulerFor(context).inspect(),
     agents: await buildAgentViews(context, now),
+    resetConfidence: await readResetConfidence(context.paths.logDir),
   };
 }
 
