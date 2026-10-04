@@ -35,9 +35,16 @@ the rest, independently for each agent:
 | Laptop asleep at the retry             | Runs the overdue check on wake; nothing is lost         |
 | Broken install or expired login        | Reported as such, never mistaken for a usage limit      |
 
-There is no daemon. A native scheduler wakes a short-lived process, which reads
-state, does only what is due, and exits. Provider CLIs are invoked only when an
-agent is actually due, not on every tick.
+There is no daemon. A native scheduler wakes a short-lived process every five
+minutes, which reads state, does only what is due, and exits. Due activations
+and retries may run up to five minutes after their scheduled time while the
+computer is awake; the next tick catches up overdue work after sleep. Provider
+CLIs are invoked only when an agent is actually due, not on every tick.
+
+After upgrading an existing installation, run `agent-waker init --repair` to
+replace its one-minute schedule. Legacy `runtime.local.tickInterval: 1m`
+configuration remains readable; new and repaired schedules always use five
+minutes.
 
 ## What it looks like
 
@@ -237,7 +244,7 @@ Three properties worth knowing:
 - **Everything is redacted first**, through the same pipeline as the event log,
   extended with your export headers. Provider output is masked and truncated;
   auth files and credentials are never read into a record at all.
-- **Ticks that had nothing to say are not exported.** On a one-minute schedule
+- **Ticks that had nothing to say are not exported.** On a five-minute schedule
   that keeps a laptop off the network for the common case. A tick that
   recovered a corrupt state file still reports, even if no agent was due.
 
@@ -245,8 +252,9 @@ Three properties worth knowing:
 process lives: a collector that drops packets outright — a VPN down, a captive
 portal — holds the process for about ten seconds regardless, because that is
 the runtime's own connect timeout. It costs that only on ticks that had
-something to export, and `launchd` runs on a sixty-second interval, so no tick
-is lost. Values above `30s` are refused for that reason.
+something to export, and `launchd` runs on a five-minute interval, so checks
+can happen up to five minutes after they become due. Values above `30s` are
+refused for that reason.
 
 One field identifies your machine: `process.executable.path` on a
 `provider.exec` span is the resolved provider binary, which usually contains

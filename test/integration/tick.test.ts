@@ -208,6 +208,17 @@ describe("scenario A — both agents available", () => {
     );
   });
 
+  it("catches up each agent when a tick arrives well after its opening", async () => {
+    const test = harness();
+
+    expect(phases(await test.run(at("14:00")))).toEqual({
+      claude: "activated",
+      codex: "activated",
+    });
+    expect(test.adapters.claude.calls.activate).toBe(1);
+    expect(test.adapters.codex.calls.activate).toBe(1);
+  });
+
   it("opens a new cycle the following day", async () => {
     const test = harness();
 
@@ -246,6 +257,20 @@ describe("scenario B — a known reset", () => {
     expect(phases(await test.run(at("08:24")))).toMatchObject({
       codex: "activated",
     });
+  });
+
+  it("catches up a reset retry when the next tick arrives much later", async () => {
+    const test = harness({
+      codex: { probe: [blockedWith(at("08:23")), { kind: "available" }] },
+    });
+
+    expect(phases(await test.run(at("07:00")))).toMatchObject({
+      codex: "waiting_known_reset",
+    });
+    expect(phases(await test.run(at("14:00")))).toMatchObject({
+      codex: "activated",
+    });
+    expect(test.adapters.codex.calls.activate).toBe(1);
   });
 });
 
@@ -967,7 +992,7 @@ describe("the event log", () => {
 
     await test.run(at("05:00"));
 
-    // A minute-level scheduler logging every no-op at info drowns the log it
+    // A periodic scheduler logging every no-op at info drowns the log it
     // exists to write, so the tick drops to debug.
     expect(await test.events()).toEqual([]);
   });

@@ -48,7 +48,8 @@ const DEFAULT_NOT_BEFORE: LocalTime = { hour: 7, minute: 0 };
 const DEFAULT_RESET_GRACE_MS = 60_000;
 const DEFAULT_NORMAL_WINDOW_HORIZON_MS = 18_000_000;
 const DEFAULT_LONG_TERM_INTERVAL_MS = 21_600_000;
-const DEFAULT_TICK_INTERVAL_MS = 60_000;
+const DEFAULT_TICK_INTERVAL_MS = 300_000;
+const LEGACY_TICK_INTERVAL_MS = 60_000;
 const DEFAULT_TELEMETRY_TIMEOUT_MS = 5_000;
 const MAX_TELEMETRY_TIMEOUT_MS = 30_000;
 const DEFAULT_LOG_LEVEL: LogLevel = "info";
@@ -585,11 +586,15 @@ export function parseConfig(source: string, file: string): AgentWakerConfig {
   // cannot honor instead of exposing an unused runtime configuration field.
   const intervalPath = ["runtime", "local", "tickInterval"];
   const interval = optional(src, intervalPath, parsePositiveDuration);
-  if (interval !== undefined && interval !== DEFAULT_TICK_INTERVAL_MS) {
+  if (
+    interval !== undefined &&
+    interval !== DEFAULT_TICK_INTERVAL_MS &&
+    interval !== LEGACY_TICK_INTERVAL_MS
+  ) {
     fail(
       src,
       intervalPath,
-      "tickInterval must be 60s; other intervals are not supported.",
+      "tickInterval must be 5m; other intervals are not supported.",
     );
   }
 

@@ -10,7 +10,7 @@
  * So launchd is pointed at a small launcher script in a directory agent waker
  * owns, and the launcher holds the paths that move. When they go stale it says
  * so precisely and exits, which `doctor` can then report, instead of the job
- * failing silently every minute.
+ * failing silently between the periodic wakes.
  */
 
 import { constants } from "node:fs";

@@ -155,6 +155,9 @@ const configFile = (): Promise<string> =>
   readFile(join(home, ".config", "agent-waker", "config.yaml"), "utf8");
 
 describe("help", () => {
+  it("describes the five-minute background scheduler", async () => {
+    expect((await invoke(["help"])).out).toContain("five-minute scheduler");
+  });
   it("is what an empty command line gets", async () => {
     const { code, out } = await invoke([]);
 
@@ -253,7 +256,7 @@ describe("tick", () => {
   });
 
   it("steps aside without complaint when another run holds the lock", async () => {
-    // launchd fires every minute. A slow run must not make the next minute
+    // launchd fires every five minutes. A slow run must not make the next wake
     // log a failure.
     await writeConfig();
 
@@ -531,7 +534,7 @@ describe("telemetry", () => {
     await withCollector();
     await invoke(["tick"], { now: at("05:00") });
 
-    // A minute-level scheduler cannot afford a connection attempt per tick,
+    // A periodic scheduler cannot afford a connection attempt per tick,
     // and a no-op has nothing to say.
     expect(received).toEqual([]);
   });
@@ -866,7 +869,7 @@ describe("logs", () => {
     const debug = await invoke(["logs", "--debug"]);
 
     // Written, so `--debug` can show it; not shown by default, because a
-    // minute-level scheduler would bury everything else (UX §14).
+    // periodic scheduler would bury everything else (UX §14).
     expect(plain.out).toContain("No events yet");
     expect(debug.out).toContain("scheduler.tick");
   });
@@ -2171,7 +2174,35 @@ describe("init", () => {
         join(home, "Library", "LaunchAgents", `${DEFAULT_LABEL}.plist`),
         "utf8",
       ),
-    ).toContain("StartInterval");
+    ).toContain("<key>StartInterval</key>\n  <integer>300</integer>");
+  });
+
+  it("repairs a minute-based installation without rewriting legacy configuration", async () => {
+    const legacy = `${CONFIG}runtime:\n  local:\n    tickInterval: 1m\n`;
+    await writeConfig(legacy);
+    const scheduler = createLaunchdScheduler({
+      runner: installs,
+      home,
+      uid: 501,
+      launcherPath: join(
+        home,
+        ".local",
+        "share",
+        "agent-waker",
+        "bin",
+        "agent-waker-runner",
+      ),
+    });
+    await scheduler.install({
+      nodePath: join(home, "stable-node"),
+      entrypoint: join(home, "entry.js"),
+      intervalSeconds: 60,
+      logDirectory: join(home, ".local", "state", "agent-waker", "logs"),
+    });
+
+    expect((await setUp(["init", "--repair"])).code).toBe(EXIT.ok);
+    expect(await scheduler.inspect()).toMatchObject({ intervalSeconds: 300 });
+    expect(await configFile()).toBe(legacy);
   });
 
   it("writes a file that explains itself", async () => {
@@ -2182,6 +2213,15 @@ describe("init", () => {
 
     expect(written).toContain("# agent waker configuration.");
     expect(written).toContain("agent-waker schedule set");
+  });
+
+  it("explains the five-minute cadence and catch-up in the generated configuration", async () => {
+    await setUp(["init"], { now: at("06:00") });
+
+    const written = await configFile();
+
+    expect(written).toContain("every five minutes while the computer is awake");
+    expect(written).toContain("catches up due work after sleep");
   });
 
   it("defaults to the machine's timezone and a sensible hour", async () => {
