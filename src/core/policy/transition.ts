@@ -32,15 +32,20 @@ export const LOCAL_RECHECK_MS = 3_600_000;
 /** A state under construction; absent fields are dropped rather than stored. */
 type Draft = { [K in keyof AgentState]: AgentState[K] | undefined } & {
   phase: AgentPhase;
+  cycleDate: LocalDate;
 };
 
-function build({ phase, ...rest }: Draft): AgentState {
+function build({
+  phase,
+  cycleDate,
+  ...rest
+}: Draft): AgentState & { readonly cycleDate: LocalDate } {
   // `exactOptionalPropertyTypes` will not take an explicit undefined, and the
   // persisted file should not carry empty keys either. Phase is reattached
   // rather than filtered so it stays statically present.
   const set = Object.entries(rest).filter(([, value]) => value !== undefined);
 
-  return Object.assign({ phase }, Object.fromEntries(set));
+  return Object.assign({ phase, cycleDate }, Object.fromEntries(set));
 }
 
 /** Whether this tick should evaluate the agent at all. */
@@ -81,7 +86,7 @@ export function applyObservation(
   observation: AgentObservation,
   now: Instant,
   capabilities: AgentCapabilities,
-): AgentState {
+): AgentState & { readonly cycleDate: LocalDate } {
   // Every observation belongs to a cycle; a state file missing its date is
   // adopted into today's rather than left unattached.
   const cycleDate = state.cycleDate ?? localDateAt(now, config.timezone);
@@ -162,7 +167,7 @@ function whenBlocked(
   now: Instant,
   attempt: Attempt,
   capabilities: AgentCapabilities,
-): AgentState {
+): AgentState & { readonly cycleDate: LocalDate } {
   const resetAt = capabilities.exactReset
     ? effectiveReset(observation.constraints)
     : undefined;
@@ -227,7 +232,7 @@ function whenTransient(
   observation: Extract<AgentObservation, { kind: "transient_error" }>,
   now: Instant,
   attempt: Attempt,
-): AgentState {
+): AgentState & { readonly cycleDate: LocalDate } {
   // No horizon: a network failure is bounded by the daily cycle, not by the
   // window that belongs to quota exhaustion.
   const step = nextBackoffStep(

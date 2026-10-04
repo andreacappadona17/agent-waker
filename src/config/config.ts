@@ -24,6 +24,7 @@ import { LEVELS, type LogLevel } from "#src/logging/log.js";
 import { describeValue } from "#src/core/describe.js";
 import { parseDuration } from "#src/config/duration.js";
 import {
+  formatLocalTime,
   parseLocalTime,
   parseTimeZone,
   type LocalTime,
@@ -55,17 +56,23 @@ const MAX_TELEMETRY_TIMEOUT_MS = 30_000;
 const DEFAULT_LOG_LEVEL: LogLevel = "info";
 const DEFAULT_SERVICE_NAME = "agent-waker";
 
+export type ActivationTimes = readonly [LocalTime, ...LocalTime[]];
+
+export type ActivationSchedule =
+  | { readonly notBefore: LocalTime; readonly windows?: never }
+  | { readonly windows: ActivationTimes; readonly notBefore?: never };
+
 /** Per-agent settings; everything not set here falls back to the global value. */
 export interface AgentConfig {
   readonly enabled: boolean;
-  readonly schedule?: { readonly notBefore: LocalTime };
+  readonly schedule?: ActivationSchedule;
 }
 
 /** A validated `config.yaml`, with every duration already in milliseconds. */
 export interface AgentWakerConfig {
   readonly version: 1;
   readonly timezone: string;
-  readonly schedule: { readonly notBefore: LocalTime };
+  readonly schedule: ActivationSchedule;
   readonly activation: { readonly resetGraceMs: number };
   readonly retry: {
     readonly unknownReset: {
@@ -467,16 +474,9 @@ function readAgents(src: Source): Record<AgentId, AgentConfig> {
     // Absent means enabled: a user who never opens the file gets both agents.
     const enabled =
       optional(src, ["agents", agentId, "enabled"], parseBoolean) ?? true;
-    const notBefore = optional(
-      src,
-      ["agents", agentId, "schedule", "notBefore"],
-      parseLocalTime,
-    );
-
+    const schedule = readSchedule(src, ["agents", agentId, "schedule"]);
     agents[agentId] =
-      notBefore === undefined
-        ? { enabled }
-        : { enabled, schedule: { notBefore } };
+      schedule === undefined ? { enabled } : { enabled, schedule };
   }
 
   return agents;
@@ -537,10 +537,8 @@ export function parseConfig(source: string, file: string): AgentWakerConfig {
   const config: AgentWakerConfig = {
     version,
     timezone,
-    schedule: {
-      notBefore:
-        optional(src, ["schedule", "notBefore"], parseLocalTime) ??
-        DEFAULT_NOT_BEFORE,
+    schedule: readSchedule(src, ["schedule"]) ?? {
+      notBefore: DEFAULT_NOT_BEFORE,
     },
     activation: {
       // Zero is legitimate: it means trust the provider's reset time exactly.
@@ -666,6 +664,7 @@ function readTelemetry(src: Source): TelemetryConfig | undefined {
 export function effectiveAgentConfig(
   config: AgentWakerConfig,
   agentId: AgentId,
+  window: LocalTime = activationTimes(config, agentId)[0],
 ): EffectiveAgentConfig {
   const agent = config.agents[agentId];
 
@@ -673,11 +672,57 @@ export function effectiveAgentConfig(
     agentId,
     enabled: agent.enabled,
     timezone: config.timezone,
-    notBefore: agent.schedule?.notBefore ?? config.schedule.notBefore,
+    notBefore: window,
     resetGraceMs: config.activation.resetGraceMs,
     unknownResetDelaysMs: config.retry.unknownReset.delaysMs,
     normalWindowHorizonMs: config.retry.unknownReset.normalWindowHorizonMs,
     longTermRetryMs: config.retry.longTerm.intervalMs,
     transientDelaysMs: config.retry.transient.delaysMs,
   };
+}
+
+/** A window's normalized wall-clock time is its identity, independent of ordering. */
+export function activationTimes(
+  config: AgentWakerConfig,
+  agentId?: AgentId,
+): ActivationTimes {
+  const schedule =
+    agentId === undefined
+      ? config.schedule
+      : (config.agents[agentId].schedule ?? config.schedule);
+  return schedule.windows ?? [schedule.notBefore];
+}
+
+function readSchedule(src: Source, path: Path): ActivationSchedule | undefined {
+  const parent = src.doc.getIn(path, true);
+  if (
+    parent !== undefined &&
+    parent !== null &&
+    !isMap(parent) &&
+    !(isScalar(parent) && parent.value === null)
+  )
+    fail(src, path, "Expected a mapping of schedule settings.");
+  const notBefore = optional(src, [...path, "notBefore"], parseLocalTime);
+  const windowsPath = [...path, "windows"];
+  src.known.add(windowsPath.join("."));
+  const node = src.doc.getIn(windowsPath, true);
+  if (node === undefined)
+    return notBefore === undefined ? undefined : { notBefore };
+  if (notBefore !== undefined)
+    fail(src, windowsPath, "Choose windows or notBefore, not both.");
+  if (!isSeq(node))
+    fail(src, windowsPath, "Expected a list of activation times.");
+  if (node.items.length === 0)
+    fail(src, windowsPath, "Expected at least one activation window.");
+  const seen = new Set<string>();
+  const windows = node.items.map((_, index) => {
+    const time = parseAt(src, [...windowsPath, index], parseLocalTime);
+    const id = formatLocalTime(time);
+    if (seen.has(id))
+      fail(src, [...windowsPath, index], `Duplicate activation window ${id}.`);
+    seen.add(id);
+    return time;
+  });
+  windows.sort((a, b) => a.hour - b.hour || a.minute - b.minute);
+  return { windows: windows as [LocalTime, ...LocalTime[]] };
 }

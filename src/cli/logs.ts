@@ -1,3 +1,4 @@
+import { activationTimes } from "#src/config/config.js";
 /**
  * `logs`: the recent events, rendered for a person.
  *
@@ -103,14 +104,21 @@ function summarise(event: StoredEvent, notBefore: string): string {
 /** What is worth adding after the summary: when it retries, or how long it took. */
 function trailer(event: StoredEvent, now: number, timeZone: string): string {
   const next = event.fields.nextAttemptAt;
-
-  if (typeof next === "string") {
-    return `next check ${relativeTime(Date.parse(next), now, timeZone)}`;
-  }
-
   const duration = event.fields.durationMs;
-
-  return typeof duration === "number" ? `${(duration / 1000).toFixed(1)}s` : "";
+  const detail =
+    typeof next === "string"
+      ? `next check ${relativeTime(Date.parse(next), now, timeZone)}`
+      : typeof duration === "number"
+        ? `${(duration / 1000).toFixed(1)}s`
+        : "";
+  return [
+    detail,
+    typeof event.fields.window === "string"
+      ? `window ${event.fields.window}`
+      : "",
+  ]
+    .filter((part) => part !== "")
+    .join(" · ");
 }
 
 /** The raw record, for when the sentence is not enough. */
@@ -150,7 +158,9 @@ export async function logsCommand(
   const { limit = DEFAULT_LIMIT, agents = [], verbose = false } = options;
   const now = context.environment.now();
   const timeZone = context.config.timezone;
-  const notBefore = formatLocalTime(context.config.schedule.notBefore);
+  const notBefore = activationTimes(context.config)
+    .map(formatLocalTime)
+    .join(", ");
   // Filtered during the read rather than after it, so the last twenty Codex
   // events are twenty however many of Claude's are interleaved with them.
   // A no-op tick is written at debug and must not appear by default
@@ -193,7 +203,7 @@ export async function logsCommand(
     printable(
       `${when(event, now, timeZone)}  ${(event.agent ?? "scheduler").padEnd(
         width,
-      )}  ${summarise(event, notBefore)} ${trailer(event, now, timeZone)}`.trimEnd(),
+      )}  ${summarise(event, typeof event.fields.window === "string" ? event.fields.window : notBefore)} ${trailer(event, now, timeZone)}`.trimEnd(),
     ),
   );
 

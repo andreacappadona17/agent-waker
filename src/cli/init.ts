@@ -18,8 +18,17 @@ import { schedulerFor, type CommandContext } from "#src/cli/context.js";
 import { renderDetection, surveyAgents } from "#src/cli/detect.js";
 import { EXIT, type ExitCode } from "#src/cli/exit.js";
 import { relativeTime, supportsUnicode } from "#src/cli/format.js";
-import { effectiveAgentConfig, parseConfig } from "#src/config/config.js";
-import { parseAgentTimes, renderSchedulePlan } from "#src/cli/schedule.js";
+import {
+  activationTimes,
+  effectiveAgentConfig,
+  parseConfig,
+} from "#src/config/config.js";
+import {
+  parseAgentTimes,
+  parseWindowTimes,
+  scheduleEdits,
+  renderSchedulePlan,
+} from "#src/cli/schedule.js";
 import { editConfig, type ConfigEdit } from "#src/config/edit.js";
 import { AGENT_IDS, asAgents, type AgentId } from "#src/core/agent.js";
 import { cycleStartAt } from "#src/core/state.js";
@@ -28,7 +37,6 @@ import {
   nextLocalDate,
   resolveLocalTime,
   formatLocalTime,
-  parseLocalTime,
   parseTimeZone,
 } from "#src/core/time.js";
 import { writeAtomic } from "#src/state/atomic.js";
@@ -359,7 +367,7 @@ function renderChoices(
 ): string {
   return editConfig(existing ?? TEMPLATE, [
     { path: ["timezone"], value: choices.timezone },
-    { path: ["schedule", "notBefore"], value: choices.notBefore },
+    ...scheduleEdits(parseWindowTimes(choices.notBefore)),
     ...choices.agentTimes,
     ...AGENT_IDS.map((agentId) => ({
       path: ["agents", agentId, "enabled"],
@@ -425,9 +433,9 @@ export async function initCommand(
           );
     const updated = renderChoices(existing, {
       timezone: parseTimeZone(options.timezone ?? defaults.timezone),
-      notBefore: formatLocalTime(
-        parseLocalTime(options.time ?? defaults.notBefore),
-      ),
+      notBefore: parseWindowTimes(options.time ?? defaults.notBefore)
+        .map(formatLocalTime)
+        .join(", "),
       enabled,
       agentTimes,
     });
@@ -478,16 +486,16 @@ export async function initCommand(
         defaults.timezone,
       )),
   );
-  const notBefore = formatLocalTime(
-    parseLocalTime(
-      options.time ??
-        (await askOr(
-          context,
-          "What time do you want the agents ready by?",
-          defaults.notBefore,
-        )),
-    ),
-  );
+  const notBefore = parseWindowTimes(
+    options.time ??
+      (await askOr(
+        context,
+        "What time do you want the agents ready by?",
+        defaults.notBefore,
+      )),
+  )
+    .map(formatLocalTime)
+    .join(", ");
 
   environment.write(
     deferralNote(
@@ -535,9 +543,11 @@ export async function initCommand(
   // means nothing will happen, and then the global time is still the honest
   // thing to show.
   const enabledAgents = AGENT_IDS.filter((id) => written.agents[id].enabled);
-  const windows = (enabledAgents.length > 0 ? enabledAgents : AGENT_IDS).map(
-    (agentId) => {
-      const effective = effectiveAgentConfig(written, agentId);
+  const windows = (
+    enabledAgents.length > 0 ? enabledAgents : AGENT_IDS
+  ).flatMap((agentId) =>
+    activationTimes(written, agentId).map((time) => {
+      const effective = effectiveAgentConfig(written, agentId, time);
       const opens = cycleStartAt(effective, now);
 
       return {
@@ -551,7 +561,7 @@ export async function initCommand(
                 effective.timezone,
               ),
       };
-    },
+    }),
   );
 
   // The next decision point is the earliest window, not the first-listed.

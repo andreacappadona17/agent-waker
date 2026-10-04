@@ -139,6 +139,8 @@ agent-waker schedule set                             # guided in a terminal
 agent-waker schedule set 06:45 --dry-run              # preview without writing
 agent-waker schedule set 08:00 --agent codex          # keep Claude's time
 agent-waker schedule set 07:00 --timezone Europe/Rome --yes
+agent-waker schedule set 07:00,16:00                  # two daily windows
+agent-waker schedule set 08:00,18:00 --agent codex    # replace Codex’s windows
 ```
 
 In a terminal, `schedule set` asks for a missing time and confirms the resolved
@@ -146,6 +148,26 @@ plan before writing. `--yes` skips confirmation; without a terminal, supply the
 time and the plan is shown before applying it. Global changes preserve existing
 per-agent overrides; use `--agent` to change an individual override. Times are
 earliest desired activation times, so a provider limit can delay activation.
+
+Each configured window has a separate Cycle per agent and local date, with at
+most one successful activation. A delayed tick catches up every still-due
+window; unsuccessful attempts keep that window's retry policy. Reordering
+windows preserves completion. Changing a time creates a new window.
+`run` evaluates all unfinished configured windows for today, even before their
+floors, and leaves completed Cycles alone.
+
+Setup accepts the same comma-separated list with `--time`. For multiple
+per-agent setup times, quote the `|`-separated override:
+
+```bash
+agent-waker init --time 07:00,16:00 --agent-times 'claude=07:00|16:00,codex=08:00|18:00'
+```
+
+Existing single-window configurations continue to work. On the first tick after
+an upgrade, existing state is assigned to the earliest effective configured
+window; other configured windows have independent Cycles. The old state did
+not record its window's time, so an edit made before the upgrade cannot be
+reconstructed.
 
 **Check the schedule before removing an nvm version.** `agent-waker doctor`
 checks the recorded interpreter and entry point, and warns about version-specific

@@ -28,9 +28,10 @@ import {
   resetConfidenceLabel,
   type ResetConfidence,
 } from "#src/cli/reset-confidence.js";
-import { effectiveAgentConfig } from "#src/config/config.js";
+import { activationTimes, effectiveAgentConfig } from "#src/config/config.js";
 import { AGENT_IDS, type AgentId } from "#src/core/agent.js";
 import {
+  agentCycles,
   needsAttention,
   nextCycleAt,
   type AgentPhase,
@@ -40,6 +41,7 @@ import { formatLocalTime, type Instant } from "#src/core/time.js";
 export interface StatusAgentView {
   readonly agentId: AgentId;
   readonly displayName: string;
+  readonly window?: string;
   readonly enabled: boolean;
   readonly phase: AgentPhase;
   readonly reason?: string;
@@ -127,7 +129,7 @@ export function phaseLabel(
 
 export function stateLabel(agent: StatusAgentView, view: PhaseContext): string {
   return agent.enabled
-    ? phaseLabel(agent.phase, agent.reason, view.notBefore)
+    ? phaseLabel(agent.phase, agent.reason, agent.window ?? view.notBefore)
     : "Disabled";
 }
 
@@ -327,34 +329,44 @@ export async function buildAgentViews(
 ): Promise<StatusAgentView[]> {
   const loaded = await context.store.load();
 
-  return AGENT_IDS.map((agentId) => {
-    const effective = effectiveAgentConfig(context.config, agentId);
-    const state = loaded.state.agents[agentId];
+  return AGENT_IDS.flatMap((agentId) =>
+    activationTimes(context.config, agentId).map((time) => {
+      const effective = effectiveAgentConfig(context.config, agentId, time);
+      const window = formatLocalTime(time);
+      const state = agentCycles(context.config, loaded.state, agentId)[
+        window
+      ] ?? { phase: "idle" };
 
-    return {
-      agentId,
-      displayName: context.registry.get(agentId).displayName,
-      enabled: effective.enabled,
-      phase: state.phase,
-      nextCycleAt: nextCycleAt(effective, state, now),
-      ...(state.reason === undefined ? {} : { reason: state.reason }),
-      ...(state.lastAttemptAt === undefined
-        ? {}
-        : { lastAttemptAt: state.lastAttemptAt }),
-      ...(state.lastActivationAt === undefined
-        ? {}
-        : { lastActivationAt: state.lastActivationAt }),
-      ...(state.nextAttemptAt === undefined
-        ? {}
-        : { nextAttemptAt: state.nextAttemptAt }),
-      ...(state.blockedUntil === undefined
-        ? {}
-        : { blockedUntil: state.blockedUntil }),
-      ...(state.retryHorizonEndsAt === undefined
-        ? {}
-        : { retryHorizonEndsAt: state.retryHorizonEndsAt }),
-    };
-  });
+      return {
+        agentId,
+        displayName:
+          context.registry.get(agentId).displayName +
+          (activationTimes(context.config, agentId).length > 1
+            ? ` (${window})`
+            : ""),
+        window,
+        enabled: effective.enabled,
+        phase: state.phase,
+        nextCycleAt: nextCycleAt(effective, state, now),
+        ...(state.reason === undefined ? {} : { reason: state.reason }),
+        ...(state.lastAttemptAt === undefined
+          ? {}
+          : { lastAttemptAt: state.lastAttemptAt }),
+        ...(state.lastActivationAt === undefined
+          ? {}
+          : { lastActivationAt: state.lastActivationAt }),
+        ...(state.nextAttemptAt === undefined
+          ? {}
+          : { nextAttemptAt: state.nextAttemptAt }),
+        ...(state.blockedUntil === undefined
+          ? {}
+          : { blockedUntil: state.blockedUntil }),
+        ...(state.retryHorizonEndsAt === undefined
+          ? {}
+          : { retryHorizonEndsAt: state.retryHorizonEndsAt }),
+      };
+    }),
+  );
 }
 
 /** What the phase vocabulary needs, without reading any state. */
@@ -365,7 +377,7 @@ export function phaseContext(
   return {
     now,
     timezone: context.config.timezone,
-    notBefore: formatLocalTime(context.config.schedule.notBefore),
+    notBefore: activationTimes(context.config).map(formatLocalTime).join(", "),
   };
 }
 

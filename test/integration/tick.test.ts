@@ -8,6 +8,7 @@ import { createRegistry } from "#src/adapters/registry.js";
 import { parseConfig, type AgentWakerConfig } from "#src/config/config.js";
 import type { AgentId } from "#src/core/agent.js";
 import type { AgentObservation } from "#src/core/observation.js";
+import { agentCycles } from "#src/core/state.js";
 import { tick, type TickResult } from "#src/core/orchestrator.js";
 import { createEventLog, readRecentEvents } from "#src/logging/log.js";
 import {
@@ -1107,8 +1108,266 @@ it("saves a successful activation before a log failure can interrupt the tick", 
     wallClock: Date.now,
   };
   await expect(tick(context)).rejects.toThrow("log unavailable");
-  expect((await store.load()).state.agents.claude.phase).toBe("activated");
+  expect(
+    agentCycles(context.config, (await store.load()).state, "claude")["07:00"]
+      ?.phase,
+  ).toBe("activated");
   await tick({ ...context, log: { write: () => Promise.resolve() } });
   expect(claude.calls.activate).toBe(1);
   expect(codex.calls.activate).toBe(1);
 });
+
+it("catches up every due activation window independently and persists completion across restarts", async () => {
+  const settings = config('schedule:\n  windows: ["07:00", "16:00"]\n');
+  const first = harness({}, { config: settings });
+  expect(
+    (await first.run(at("17:00"))).agents.filter(
+      (a) => a.phase === "activated",
+    ),
+  ).toHaveLength(4);
+  expect(first.adapters.claude.calls.activate).toBe(2);
+  const restarted = harness({}, { config: settings });
+  await restarted.run(at("19:00"));
+  expect(restarted.adapters.claude.calls.activate).toBe(0);
+  await restarted.run(at("07:00", "08"));
+  expect(restarted.adapters.claude.calls.activate).toBe(1);
+});
+
+it("imports one legacy success without consuming a new afternoon Cycle", async () => {
+  const store = createStateStore(join(directory, "state"));
+  await store.save({
+    version: 1,
+    updatedAt: at("07:00"),
+    agents: {
+      claude: {
+        phase: "activated",
+        cycleDate: "2026-09-07",
+        lastActivationAt: at("07:00"),
+      },
+      codex: { phase: "idle" },
+    },
+  });
+  const test = harness(
+    {},
+    { config: config('schedule:\n  windows: ["07:00", "16:00"]\n') },
+  );
+  const result = await test.run(at("17:00"), { only: ["claude"] });
+  expect(result.agents.map((a) => [a.window, a.phase, a.skipped])).toEqual([
+    ["07:00", "activated", "not_due"],
+    ["16:00", "activated", undefined],
+  ]);
+  expect(test.adapters.claude.calls.activate).toBe(1);
+  await test.run(at("18:00"), { only: ["claude"] });
+  expect(test.adapters.claude.calls.activate).toBe(1);
+});
+
+it("dates a legacy completed Cycle missing its date before considering another activation", async () => {
+  const store = createStateStore(join(directory, "state"));
+  await store.save({
+    version: 1,
+    updatedAt: at("07:00"),
+    agents: {
+      claude: { phase: "activated", lastActivationAt: at("07:00") },
+      codex: { phase: "idle" },
+    },
+  });
+  const test = harness(
+    {},
+    { config: config('schedule:\n  windows: ["07:00", "16:00"]\n') },
+  );
+  await test.run(at("17:00"), { only: ["claude"] });
+  expect(test.adapters.claude.calls.activate).toBe(1);
+});
+
+it("uses the saved date when a legacy completed Cycle has no activation timestamp", async () => {
+  const store = createStateStore(join(directory, "state"));
+  await store.save({
+    version: 1,
+    updatedAt: at("07:00"),
+    agents: { claude: { phase: "activated" }, codex: { phase: "idle" } },
+  });
+  const test = harness();
+  await test.run(at("09:00"), { only: ["claude"] });
+  expect(test.adapters.claude.calls.activate).toBe(0);
+});
+
+it("adopts an undated legacy wait into a dated Cycle when it retries before the floor", async () => {
+  const store = createStateStore(join(directory, "state"));
+  await store.save({
+    version: 1,
+    updatedAt: at("06:00"),
+    agents: {
+      claude: { phase: "waiting_unknown_reset", nextAttemptAt: at("06:00") },
+      codex: { phase: "idle" },
+    },
+  });
+  const test = harness();
+  const result = await test.run(at("06:00"), { only: ["claude"] });
+  expect(result.agents[0]?.phase).toBe("activated");
+  expect(
+    test.telemetry.spans.find((s) => s.name === "agent.activation")?.attributes[
+      "cycle.date"
+    ],
+  ).toBe("2026-09-07");
+});
+
+it("keeps failed attempts and retry horizons independent for each window", async () => {
+  const test = harness(
+    {
+      claude: {
+        probe: [
+          blockedWith(undefined),
+          { kind: "available" },
+          { kind: "available" },
+        ],
+      },
+    },
+    { config: config('schedule:\n  windows: ["07:00", "16:00"]\n') },
+  );
+  const caught = await test.run(at("16:00"), { only: ["claude"] });
+  expect(caught.agents.map((a) => [a.window, a.phase])).toEqual([
+    ["07:00", "long_term_block"],
+    ["16:00", "activated"],
+  ]);
+  expect(caught.agents[0]?.nextAttemptAt).toBe(at("22:00"));
+  await test.run(at("17:00"), { only: ["claude"] });
+  expect(test.adapters.claude.calls.activate).toBe(1);
+  await test.run(at("22:00"), { only: ["claude"] });
+  expect(test.adapters.claude.calls.activate).toBe(2);
+  await test.run(at("22:05"), { only: ["claude"] });
+  expect(test.adapters.claude.calls.activate).toBe(2);
+});
+
+it("retries each unsuccessful catch-up Cycle independently on its normal quota ladder", async () => {
+  const test = harness(
+    {
+      claude: {
+        probe: [
+          blockedWith(undefined),
+          { kind: "available" },
+          { kind: "available" },
+        ],
+      },
+    },
+    { config: config('schedule:\n  windows: ["07:00", "08:00"]\n') },
+  );
+  const caught = await test.run(at("09:00"), { only: ["claude"] });
+  expect(caught.agents.map((a) => [a.window, a.phase])).toEqual([
+    ["07:00", "waiting_unknown_reset"],
+    ["08:00", "activated"],
+  ]);
+  expect(caught.agents[0]?.nextAttemptAt).toBe(at("09:05"));
+  await test.run(at("09:04"), { only: ["claude"] });
+  expect(test.adapters.claude.calls.activate).toBe(1);
+  await test.run(at("09:05"), { only: ["claude"] });
+  expect(test.adapters.claude.calls.activate).toBe(2);
+  await test.run(at("09:06"), { only: ["claude"] });
+  expect(test.adapters.claude.calls.activate).toBe(2);
+});
+
+it("persists an undated disabled legacy wait safely while another agent completes", async () => {
+  const store = createStateStore(join(directory, "state"));
+  await store.save({
+    version: 1,
+    updatedAt: at("06:00"),
+    agents: {
+      claude: { phase: "waiting_known_reset", blockedUntil: at("18:00") },
+      codex: { phase: "idle" },
+    },
+  });
+  const test = harness(
+    {},
+    { config: config("agents:\n  claude:\n    enabled: false\n") },
+  );
+  await test.run(at("07:00"));
+  expect((await store.load()).source).toBe("file");
+  expect((await store.load()).state.version).toBe(2);
+});
+
+it.each([
+  {
+    name: "spring gap",
+    days: [
+      {
+        date: "2026-03-28",
+        start: "2026-03-27T23:00:00Z",
+        end: "2026-03-28T23:00:00Z",
+        floors: ["2026-03-28T01:30:00Z", "2026-03-28T02:30:00Z"],
+      },
+      {
+        date: "2026-03-29",
+        start: "2026-03-28T23:00:00Z",
+        end: "2026-03-29T22:00:00Z",
+        floors: ["2026-03-29T01:30:00Z", "2026-03-29T01:30:00Z"],
+      },
+      {
+        date: "2026-03-30",
+        start: "2026-03-29T22:00:00Z",
+        end: "2026-03-30T22:00:00Z",
+        floors: ["2026-03-30T00:30:00Z", "2026-03-30T01:30:00Z"],
+      },
+    ],
+  },
+  {
+    name: "fall overlap",
+    days: [
+      {
+        date: "2026-10-24",
+        start: "2026-10-23T22:00:00Z",
+        end: "2026-10-24T22:00:00Z",
+        floors: ["2026-10-24T00:30:00Z", "2026-10-24T01:30:00Z"],
+      },
+      {
+        date: "2026-10-25",
+        start: "2026-10-24T22:00:00Z",
+        end: "2026-10-25T23:00:00Z",
+        floors: ["2026-10-25T00:30:00Z", "2026-10-25T02:30:00Z"],
+      },
+      {
+        date: "2026-10-26",
+        start: "2026-10-25T23:00:00Z",
+        end: "2026-10-26T23:00:00Z",
+        floors: ["2026-10-26T01:30:00Z", "2026-10-26T02:30:00Z"],
+      },
+    ],
+  },
+])(
+  "preserves per-Cycle floors and one success across randomized delayed and repeated ticks through $name",
+  async ({ days }) => {
+    const test = harness(
+      {},
+      { config: config('schedule:\n  windows: ["02:30", "03:30"]\n') },
+    );
+    let seed = 21;
+    const successes = new Map<string, number>();
+    for (const day of days) {
+      const start = utc(day.start),
+        end = utc(day.end);
+      const floors = day.floors.map(utc);
+      const samples = [
+        start,
+        ...floors.flatMap((floor) => [floor - 1, floor, floor, floor + 1]),
+        end - 1,
+      ];
+      for (let i = 0; i < 12; i++) {
+        seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0;
+        samples.push(start + (seed % (end - start)));
+      }
+      samples.sort((a, b) => a - b);
+      for (const now of samples) {
+        const result = await test.run(now, { only: ["claude"] });
+        for (const outcome of result.agents.filter(
+          (o) => o.skipped === undefined && o.phase === "activated",
+        )) {
+          const key = `${day.date}/${outcome.window ?? ""}`;
+          successes.set(key, (successes.get(key) ?? 0) + 1);
+          expect(successes.get(key)).toBe(1);
+        }
+        expect(test.adapters.claude.calls.activate).toBe(
+          days.indexOf(day) * 2 + floors.filter((floor) => floor <= now).length,
+        );
+      }
+    }
+    expect([...successes.values()]).toEqual([1, 1, 1, 1, 1, 1]);
+  },
+);

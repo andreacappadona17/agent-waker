@@ -308,11 +308,11 @@ describe("run", () => {
     await invoke(["run", "claude"], { now: at("05:00") });
 
     const parsed = JSON.parse(await stateFile()) as {
-      agents: Record<string, { phase: string }>;
+      agents: Record<string, Record<string, { phase: string }>>;
     };
 
-    expect(parsed.agents.claude?.phase).toBe("activated");
-    expect(parsed.agents.codex?.phase).toBe("idle");
+    expect(parsed.agents.claude?.["07:00"]?.phase).toBe("activated");
+    expect(parsed.agents.codex?.["07:00"]?.phase).toBe("idle");
   });
 
   it("says what it is doing, and what it found", async () => {
@@ -972,6 +972,64 @@ describe("logs", () => {
     expect(out).not.toContain("agent.activated");
   });
 
+  it("distinguishes same-timestamp catch-up windows while preserving legacy lines and neutralising recorded controls", async () => {
+    await writeConfig(CONFIG + 'schedule:\n  windows: ["07:00", "16:00"]\n');
+    expect((await invoke(["tick"], { now: at("17:00") })).code).toBe(EXIT.ok);
+    await writeFile(
+      join(
+        home,
+        ".local",
+        "state",
+        "agent-waker",
+        "logs",
+        "events-2026-09-07.jsonl",
+      ),
+      [
+        { event: "agent.activated", fields: { durationMs: 0 } },
+        {
+          event: "agent.waiting_known_reset",
+          fields: {
+            window: "\u001b[2J18:00\n",
+            nextAttemptAt: "2026-09-07T16:01:00.000Z",
+          },
+        },
+      ]
+        .map((record) =>
+          JSON.stringify({
+            timestamp: "2026-09-07T15:00:00.000Z",
+            level: "info",
+            agent: "claude",
+            runtime: "local",
+            ...record,
+          }),
+        )
+        .join("\n") + "\n",
+      { flag: "a" },
+    );
+    expect((await invoke(["schedule", "set", "08:00,17:00"])).code).toBe(
+      EXIT.ok,
+    );
+
+    const { code, out } = await invoke(["logs", "claude"], {
+      now: at("17:05"),
+    });
+    expect(code).toBe(EXIT.ok);
+    expect(out).toContain(
+      "today 17:00:00  claude     Activated 0.0s · window 07:00",
+    );
+    expect(out).toContain(
+      "today 17:00:00  claude     Activated 0.0s · window 16:00",
+    );
+    expect(out.split("\n")).toContain(
+      "today 17:00:00  claude     Activated 0.0s",
+    );
+    expect(out).toContain(
+      "Usage window limited next check today 18:01 · window  [2J18:00",
+    );
+    expect(out).not.toMatch(ANSI);
+    expect(out.match(/today 17:00:00/g)).toHaveLength(4);
+  });
+
   it("names a limit the way status does", async () => {
     await writeConfig();
     await invoke(["tick"], {
@@ -1394,11 +1452,11 @@ describe("enable and disable", () => {
     await invoke(["tick"], { now: at("07:00") });
 
     const parsed = JSON.parse(await stateFile()) as {
-      agents: Record<string, { phase: string }>;
+      agents: Record<string, Record<string, { phase: string }>>;
     };
 
-    expect(parsed.agents.claude?.phase).toBe("activated");
-    expect(parsed.agents.codex?.phase).toBe("idle");
+    expect(parsed.agents.claude?.["07:00"]?.phase).toBe("activated");
+    expect(parsed.agents.codex?.["07:00"]?.phase).toBe("idle");
   });
 
   it("keeps what already happened, so status still explains itself", async () => {
@@ -1999,6 +2057,7 @@ describe("init", () => {
       now: at("06:00"),
     });
 
+    expect(preview.err).toBe("");
     expect(preview.code).toBe(EXIT.ok);
     expect(preview.out).toContain("Fake claude  enabled  07:00 UTC");
     expect(preview.out).toContain("Fake codex  enabled  07:00 UTC");
@@ -2671,11 +2730,11 @@ describe("init", () => {
     expect(code).toBe(EXIT.ok);
 
     const state = JSON.parse(await stateFile()) as {
-      agents: Record<string, { phase: string }>;
+      agents: Record<string, Record<string, { phase: string }>>;
     };
 
-    expect(state.agents.codex?.phase).toBe("activated");
-    expect(state.agents.claude?.phase).toBe("idle");
+    expect(state.agents.codex?.["07:00"]?.phase).toBe("activated");
+    expect(state.agents.claude?.["07:00"]?.phase).toBe("idle");
   });
 
   it("activates nothing when the user excluded everything", async () => {
@@ -2685,11 +2744,11 @@ describe("init", () => {
     });
 
     const state = JSON.parse(await stateFile()) as {
-      agents: Record<string, { phase: string }>;
+      agents: Record<string, Record<string, { phase: string }>>;
     };
 
-    expect(state.agents.claude?.phase).toBe("idle");
-    expect(state.agents.codex?.phase).toBe("idle");
+    expect(state.agents.claude?.["07:00"]?.phase).toBe("idle");
+    expect(state.agents.codex?.["07:00"]?.phase).toBe("idle");
   });
 
   it("reports what it wrote, whatever shape the file is in", async () => {
@@ -2931,4 +2990,118 @@ describe("uninstall", () => {
 
     expect(code).toBe(EXIT.ok);
   });
+});
+
+it("previews, edits and reports multiple global and per-agent windows through CLI", async () => {
+  await writeConfig("# my schedule\n" + CONFIG);
+  const preview = await invoke(["schedule", "set", "07:00,16:00", "--dry-run"]);
+  expect(preview.err).toBe("");
+  expect(preview.code).toBe(EXIT.ok);
+  expect(preview.out).toContain("07:00, 16:00");
+  expect(await configFile()).not.toContain("windows");
+  expect((await invoke(["schedule", "set", "07:00,16:00"])).code).toBe(EXIT.ok);
+  expect(
+    (await invoke(["schedule", "set", "09:00,18:00", "--agent", "codex"])).code,
+  ).toBe(EXIT.ok);
+  const status = await invoke(["status"], { now: at("06:00") });
+  expect(status.out).toContain("Fake claude (07:00)");
+  expect(status.out).toContain("Fake claude (16:00)");
+  expect(status.out).toContain("Fake codex (09:00)");
+  expect(status.out).toContain("Fake codex (18:00)");
+  expect(await configFile()).toContain("# my schedule");
+});
+
+it("accepts multiple activation windows during setup and per-agent setup overrides", async () => {
+  const result = await invoke([
+    "init",
+    "--dry-run",
+    "--time",
+    "07:00,16:00",
+    "--agent-times",
+    "codex=09:00|18:00",
+  ]);
+  expect(result.code).toBe(EXIT.ok);
+  expect(result.out).toContain("Default  07:00, 16:00");
+  expect(result.out).toContain("Fake codex  enabled  18:00");
+});
+
+it("forced run completes each configured Cycle today once, including before its floor", async () => {
+  await writeConfig(CONFIG + 'schedule:\n  windows: ["07:00", "16:00"]\n');
+  const first = await invoke(["run", "claude"], { now: at("05:00") });
+  expect(first.code).toBe(EXIT.ok);
+  expect(first.out).toContain("Fake claude (07:00)");
+  expect(first.out).toContain("Fake claude (16:00)");
+  const again = await invoke(["run", "claude"], { now: at("17:00") });
+  expect(again.out.match(/nothing was sent/g)).toHaveLength(2);
+  const next = await invoke(["run", "claude"], { now: at("05:00", "08") });
+  expect(next.out).not.toContain("nothing was sent");
+});
+
+it("preserves schedule comments when switching between single and multiple windows", async () => {
+  await writeConfig(
+    CONFIG + 'schedule:\n  notBefore: "07:00" # morning boundary\n',
+  );
+  expect((await invoke(["schedule", "set", "07:00,16:00"])).code).toBe(EXIT.ok);
+  expect(await configFile()).toContain("# morning boundary");
+  const single = await invoke(["schedule", "set", "08:00"]);
+  expect(single.err).toBe("");
+  expect(single.code).toBe(EXIT.ok);
+  expect(await configFile()).toContain("# morning boundary");
+});
+
+it("keeps surviving window notes with their time and displaced notes when editing multiple windows", async () => {
+  await writeConfig(
+    CONFIG +
+      `schedule:
+  windows: # daily boundaries
+    # dawn note
+    - "05:00" # dawn boundary
+    # morning note
+    - "7:00" # morning boundary
+    # afternoon note
+    - "16:00" # afternoon boundary
+`,
+  );
+
+  expect((await invoke(["schedule", "set", "06:00,07:00,18:00"])).code).toBe(
+    EXIT.ok,
+  );
+  const edited = await configFile();
+  expect(edited).toContain('# morning note\n    - "07:00" # morning boundary');
+  expect(edited).toContain("# afternoon note");
+  expect(edited).toContain("# afternoon boundary");
+  expect(edited).toContain("# dawn note");
+  expect(edited).toContain("# dawn boundary");
+  expect(edited).toContain("# daily boundaries");
+  expect((await invoke(["status"])).out).toContain("06:00, 07:00, 18:00");
+});
+
+it("preserves every window note when converting an agent schedule to one window", async () => {
+  await writeConfig(
+    CONFIG +
+      `agents:
+  codex:
+    schedule:
+      windows: # work boundaries
+        # morning note
+        - "07:00" # morning boundary
+        # afternoon note
+        - "16:00" # afternoon boundary
+`,
+  );
+
+  expect(
+    (await invoke(["schedule", "set", "16:00", "--agent", "codex"])).code,
+  ).toBe(EXIT.ok);
+  const edited = await configFile();
+  expect(edited).toContain("# morning boundary");
+  expect(edited).toContain("# morning note");
+  expect(edited).toContain("# afternoon boundary");
+  expect(edited).toContain("# afternoon note");
+  expect(edited).toContain("# work boundaries");
+  expect(edited).toContain('notBefore: "16:00"');
+  expect(edited).not.toContain("windows:");
+  expect((await invoke(["status"])).out).toMatch(
+    /Fake codex\s+○ Waiting for 16:00/,
+  );
 });

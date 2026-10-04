@@ -11,9 +11,11 @@ import type { CommandContext } from "#src/cli/context.js";
 import { EXIT, type ExitCode } from "#src/cli/exit.js";
 import { relativeTime } from "#src/cli/format.js";
 import {
+  activationTimes,
   effectiveAgentConfig,
   parseConfig,
   type AgentWakerConfig,
+  type ActivationTimes,
 } from "#src/config/config.js";
 import { editConfig, type ConfigEdit } from "#src/config/edit.js";
 import { AGENT_IDS, asAgents, type AgentId } from "#src/core/agent.js";
@@ -52,7 +54,7 @@ async function rewrite(
 export function parseAgentTimes(input: string | undefined): ConfigEdit[] {
   if (input === undefined) return [];
   const seen = new Set<AgentId>();
-  return input.split(",").map((assignment) => {
+  return input.split(",").flatMap((assignment) => {
     const [name, time, extra] = assignment.split("=");
     if (name === undefined || time === undefined || extra !== undefined) {
       throw new Error(
@@ -63,10 +65,7 @@ export function parseAgentTimes(input: string | undefined): ConfigEdit[] {
     if (agent === undefined || seen.has(agent))
       throw new Error(`Duplicate agent time: ${name}`);
     seen.add(agent);
-    return {
-      path: ["agents", agent, "schedule", "notBefore"],
-      value: formatLocalTime(parseLocalTime(time)),
-    };
+    return scheduleEdits(parseWindowTimes(time.replaceAll("|", ",")), agent);
   });
 }
 
@@ -80,28 +79,30 @@ export function renderSchedulePlan(
   const lines = [
     "Resolved schedule",
     "",
-    `  Default  ${formatLocalTime(config.schedule.notBefore)} ${config.timezone}`,
+    `  Default  ${activationTimes(config).map(formatLocalTime).join(", ")} ${config.timezone}`,
   ];
   for (const agentId of AGENT_IDS) {
-    const effective = effectiveAgentConfig(config, agentId);
-    const opens = resolveLocalTime(
-      localDateAt(now, effective.timezone),
-      effective.notBefore,
-      effective.timezone,
-    );
-    if (effective.enabled)
-      next.push(
-        now < opens
-          ? opens
-          : resolveLocalTime(
-              nextLocalDate(localDateAt(now, effective.timezone)),
-              effective.notBefore,
-              effective.timezone,
-            ),
+    for (const time of activationTimes(config, agentId)) {
+      const effective = effectiveAgentConfig(config, agentId, time);
+      const opens = resolveLocalTime(
+        localDateAt(now, effective.timezone),
+        effective.notBefore,
+        effective.timezone,
       );
-    lines.push(
-      `  ${context.registry.get(agentId).displayName}  ${effective.enabled ? "enabled" : "disabled"}  ${formatLocalTime(effective.notBefore)} ${effective.timezone}`,
-    );
+      if (effective.enabled)
+        next.push(
+          now < opens
+            ? opens
+            : resolveLocalTime(
+                nextLocalDate(localDateAt(now, effective.timezone)),
+                effective.notBefore,
+                effective.timezone,
+              ),
+        );
+      lines.push(
+        `  ${context.registry.get(agentId).displayName}  ${effective.enabled ? "enabled" : "disabled"}  ${formatLocalTime(effective.notBefore)} ${effective.timezone}`,
+      );
+    }
   }
   lines.push(
     "",
@@ -122,11 +123,9 @@ export async function scheduleSetCommand(
   const { environment } = context;
   const agent =
     options.agent === undefined ? undefined : asAgents([options.agent])[0];
-  const before = formatLocalTime(
-    agent === undefined
-      ? context.config.schedule.notBefore
-      : effectiveAgentConfig(context.config, agent).notBefore,
-  );
+  const before = activationTimes(context.config, agent)
+    .map(formatLocalTime)
+    .join(", ");
 
   if (
     time === undefined &&
@@ -151,16 +150,10 @@ export async function scheduleSetCommand(
 
   // Parsed here so a bad value is refused before the file is touched, and the
   // message is the same one the config loader would have given.
-  const wanted = parseLocalTime(time);
+  const wanted = parseWindowTimes(time);
   const zone = timezone === undefined ? undefined : parseTimeZone(timezone);
   const edits: ConfigEdit[] = [
-    {
-      path:
-        agent === undefined
-          ? ["schedule", "notBefore"]
-          : ["agents", agent, "schedule", "notBefore"],
-      value: formatLocalTime(wanted),
-    },
+    ...scheduleEdits(wanted, agent),
     ...(zone === undefined ? [] : [{ path: ["timezone"], value: zone }]),
   ];
 
@@ -198,7 +191,7 @@ export async function scheduleSetCommand(
       "Desired activation changed",
       "",
       `  from  ${before}`,
-      `  to    ${formatLocalTime(wanted)}`,
+      `  to    ${wanted.map(formatLocalTime).join(", ")}`,
       `  zone  ${zone ?? context.config.timezone}`,
       "",
       "The background scheduler does not need to be restarted; it reads this",
@@ -268,4 +261,28 @@ export async function setEnabledCommand(
   }
 
   return EXIT.ok;
+}
+
+/** CLI accepts comma-separated times; config validation provides duplicate checks. */
+export function parseWindowTimes(input: string): ActivationTimes {
+  return input.split(",").map((time) => parseLocalTime(time.trim())) as [
+    import("#src/core/time.js").LocalTime,
+    ...import("#src/core/time.js").LocalTime[],
+  ];
+}
+export function scheduleEdits(
+  times: ActivationTimes,
+  agent?: AgentId,
+): ConfigEdit[] {
+  const path =
+    agent === undefined ? ["schedule"] : ["agents", agent, "schedule"];
+  return times.length === 1
+    ? [
+        { path: [...path, "windows"], value: undefined },
+        { path: [...path, "notBefore"], value: formatLocalTime(times[0]) },
+      ]
+    : [
+        { path: [...path, "notBefore"], value: undefined },
+        { path: [...path, "windows"], value: times.map(formatLocalTime) },
+      ];
 }

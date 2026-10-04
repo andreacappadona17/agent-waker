@@ -126,8 +126,8 @@ describe("decodeState", () => {
   });
 
   it("refuses a version from the future with a clear message", () => {
-    expect(() => decodeState(withState({ version: 2 }))).toThrow(
-      /version 2.*newer/i,
+    expect(() => decodeState(withState({ version: 3 }))).toThrow(
+      /version 3.*newer/i,
     );
   });
 
@@ -175,3 +175,40 @@ describe("decodeState", () => {
     expect(decode).toThrow(/"sleeping"/);
   });
 });
+
+it("rejects malformed and competing v2 Cycle state rather than forgetting successful activations", () => {
+  const base = {
+    version: 2,
+    updatedAt: "2026-09-07T07:00:00.000Z",
+    agents: {
+      claude: { "07:00": { phase: "activated", cycleDate: "2026-09-07" } },
+      codex: {},
+    },
+  };
+  expect(decodeState(base)).toEqual({
+    version: 2,
+    updatedAt: utc("2026-09-07T07:00:00.000Z"),
+    agents: {
+      claude: { "07:00": { phase: "activated", cycleDate: "2026-09-07" } },
+      codex: {},
+    },
+  });
+  for (const entry of [
+    { phase: "idle", cycles: {} },
+    { phase: "activated", cycleDate: "2026-02-30" },
+    { phase: "activated" },
+  ]) {
+    expect(() =>
+      decodeState({ ...base, agents: { claude: { "07:00": entry } } }),
+    ).toThrow(InvalidStateError);
+  }
+});
+
+it.each(["0", "2026-09-07", "2026-02-30T07:00:00.000Z"])(
+  "rejects non-ISO or impossible persisted instants: %s",
+  (updatedAt) => {
+    expect(() => decodeState({ version: 2, updatedAt, agents: {} })).toThrow(
+      InvalidStateError,
+    );
+  },
+);
