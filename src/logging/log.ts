@@ -169,8 +169,9 @@ export async function readRecentEvents(
 
   try {
     names = await readdir(directory);
-  } catch {
-    return [];
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
+    throw error;
   }
 
   const days = names.filter((name) => FILE_PATTERN.test(name)).toSorted();

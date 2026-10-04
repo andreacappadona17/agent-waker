@@ -19,6 +19,10 @@ import { join } from "node:path";
 import { schedulerFor, type CommandContext } from "#src/cli/context.js";
 import { EXIT, type ExitCode } from "#src/cli/exit.js";
 import { iconFor, supportsUnicode } from "#src/cli/format.js";
+import {
+  readResetConfidence,
+  resetConfidenceLabel,
+} from "#src/cli/reset-confidence.js";
 import { AGENT_IDS, type AgentId } from "#src/core/agent.js";
 
 type Outcome = "pass" | "warn" | "fail";
@@ -441,8 +445,21 @@ export async function doctorCommand(
     if (telemetry !== undefined) sections.push(telemetry);
   }
 
+  const confidence = await readResetConfidence(context.paths.logDir);
   for (const agentId of chosen) {
-    sections.push(await agentSection(context, agentId));
+    const section = await agentSection(context, agentId);
+    const counts = confidence?.[agentId];
+    sections.push({
+      ...section,
+      checks: [
+        ...section.checks,
+        {
+          name: "reset source confidence (retained local blocks)",
+          outcome: "pass",
+          evidence: `${counts === undefined ? "" : `${String(counts.stated)} stated : ${String(counts.guessed)} guessed; `}${resetConfidenceLabel(counts)}; source evidence, not measured prediction accuracy.`,
+        },
+      ],
+    });
   }
 
   const all = sections.flatMap((section) => section.checks);

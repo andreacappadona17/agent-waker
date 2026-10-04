@@ -570,6 +570,162 @@ describe("telemetry", () => {
 });
 
 describe("status", () => {
+  it("reports no reset evidence before any blocked observations", async () => {
+    await writeConfig();
+
+    const status = await invoke(["status"]);
+    const doctor = await invoke(["doctor", "codex"]);
+
+    expect(status.code).toBe(EXIT.ok);
+    expect(status.out).toContain("no recorded reset sources");
+    expect(status.out).not.toContain("NaN");
+    expect(doctor.code).toBe(EXIT.ok);
+    expect(doctor.out).toContain(
+      "0 stated : 0 guessed; no recorded reset sources",
+    );
+  });
+
+  it("reports unavailable evidence when a retained log cannot be read", async () => {
+    await writeConfig();
+    // A day-file path that became a directory is a deterministic read failure,
+    // including when the test process has elevated filesystem permissions.
+    await mkdir(
+      join(
+        home,
+        ".local",
+        "state",
+        "agent-waker",
+        "logs",
+        "events-2026-09-07.jsonl",
+      ),
+      { recursive: true },
+    );
+
+    const status = await invoke(["status"]);
+    const doctor = await invoke(["doctor", "codex"]);
+
+    expect(status.code).toBe(EXIT.ok);
+    expect(status.out).toContain("unavailable (log unreadable)");
+    expect(doctor.code).toBe(EXIT.ok);
+    expect(doctor.out).toContain("unavailable (log unreadable)");
+  });
+
+  it("reports unavailable evidence when the log root is a regular file", async () => {
+    await writeConfig();
+    const stateDir = join(home, ".local", "state", "agent-waker");
+    await mkdir(stateDir, { recursive: true });
+    await writeFile(join(stateDir, "logs"), "not a directory");
+
+    const status = await invoke(["status"]);
+    const doctor = await invoke(["doctor", "codex"]);
+
+    expect(status.code).toBe(EXIT.ok);
+    expect(status.out).toContain("unavailable (log unreadable)");
+    expect(status.out).not.toContain("no recorded reset sources");
+    expect(doctor.code).toBe(EXIT.ok);
+    expect(doctor.out).toContain("unavailable (log unreadable)");
+    expect(doctor.out).not.toContain("0 stated : 0 guessed");
+  });
+
+  it("uses only retained reset evidence after old logs are pruned", async () => {
+    await writeConfig();
+    await invoke(["tick"], {
+      now: at("07:00"),
+      scripts: {
+        codex: {
+          probe: [
+            {
+              kind: "blocked",
+              reason: "rolling_window",
+              constraints: [
+                {
+                  type: "rolling_window",
+                  resetAt: at("08:23"),
+                  confidence: "high",
+                },
+              ],
+            },
+          ],
+        },
+      },
+    });
+    await invoke(["tick"], {
+      now: at("07:00", "23"),
+      scripts: {
+        codex: {
+          probe: [
+            {
+              kind: "blocked",
+              reason: "quota",
+              constraints: [{ type: "quota", confidence: "high" }],
+            },
+          ],
+        },
+      },
+    });
+
+    const status = await invoke(["status"], { now: at("09:00", "23") });
+    const doctor = await invoke(["doctor", "codex"], {
+      now: at("09:00", "23"),
+    });
+
+    expect(status.out).toContain("0% provider-stated (0/1)");
+    expect(doctor.out).toContain("0 stated : 1 guessed");
+  });
+
+  it("shows no reset evidence when the configured log level omits blocked observations", async () => {
+    await writeConfig(`${CONFIG}logging:\n  level: warn\n`);
+    await invoke(["tick"], {
+      scripts: {
+        codex: {
+          probe: [
+            {
+              kind: "blocked",
+              reason: "quota",
+              constraints: [{ type: "quota", confidence: "high" }],
+            },
+          ],
+        },
+      },
+    });
+
+    const { out } = await invoke(["status"]);
+
+    expect(out).toContain("no recorded reset sources");
+    expect(out).not.toContain("provider-stated (");
+  });
+
+  it("shows provider-stated reset confidence from ticks without telemetry", async () => {
+    await writeConfig();
+    await invoke(["tick"], {
+      now: at("07:00"),
+      scripts: {
+        codex: {
+          probe: [
+            {
+              kind: "blocked",
+              reason: "rolling_window",
+              constraints: [
+                {
+                  type: "rolling_window",
+                  resetAt: at("08:23"),
+                  confidence: "high",
+                },
+              ],
+            },
+          ],
+        },
+      },
+    });
+
+    const { code, out } = await invoke(["status"]);
+
+    expect(code).toBe(EXIT.ok);
+    expect(out).toContain("Reset confidence");
+    expect(out).toContain("100% provider-stated (1/1)");
+    expect(out).toContain("source evidence, not measured prediction accuracy");
+  });
+
   it("describes a machine that has not run yet", async () => {
     await writeConfig();
 
@@ -788,6 +944,19 @@ describe("logs", () => {
 
     expect(code).toBe(EXIT.ok);
     expect(out).toContain("No events yet");
+  });
+
+  it("reports a read failure when the log root is a regular file", async () => {
+    await writeConfig();
+    const stateDir = join(home, ".local", "state", "agent-waker");
+    await mkdir(stateDir, { recursive: true });
+    await writeFile(join(stateDir, "logs"), "not a directory");
+
+    const { code, out, err } = await invoke(["logs"]);
+
+    expect(code).toBe(EXIT.failed);
+    expect(err).toContain("ENOTDIR");
+    expect(out).not.toContain("No events yet");
   });
 
   it("shows what happened, in the words the other commands use", async () => {
@@ -1289,6 +1458,95 @@ describe("unknown options", () => {
 });
 
 describe("doctor", () => {
+  it("ignores historical, malformed, and unrelated entries when scoring resets", async () => {
+    await writeConfig();
+    const directory = join(home, ".local", "state", "agent-waker", "logs");
+    await mkdir(directory, { recursive: true });
+    const blocked = {
+      timestamp: "2026-09-07T07:00:00.000Z",
+      event: "agent.waiting_unknown_reset",
+      agent: "codex",
+      level: "info",
+      runtime: "local",
+      fields: { reset_source: "guessed" },
+    };
+    await writeFile(
+      join(directory, "events-2026-09-07.jsonl"),
+      [
+        "torn JSON",
+        JSON.stringify(blocked),
+        JSON.stringify({ ...blocked, fields: {} }),
+        JSON.stringify({ ...blocked, fields: null }),
+        JSON.stringify({ ...blocked, fields: { reset_source: "unknown" } }),
+        JSON.stringify({
+          ...blocked,
+          event: "agent.activated",
+          fields: { reset_source: "stated" },
+        }),
+        JSON.stringify({
+          ...blocked,
+          event: "scheduler.tick",
+          fields: { reset_source: "stated" },
+        }),
+        JSON.stringify({
+          ...blocked,
+          agent: "other",
+          fields: { reset_source: "stated" },
+        }),
+        JSON.stringify({
+          ...blocked,
+          timestamp: "bad timestamp",
+          fields: { reset_source: "stated" },
+        }),
+      ].join("\n"),
+    );
+
+    const { code, out } = await invoke(["doctor", "codex"]);
+
+    expect(code).toBe(EXIT.ok);
+    expect(out).toContain("0 stated : 1 guessed; 0% provider-stated (0/1)");
+  });
+
+  it("reports the stated-vs-guessed ratio for the named agent without treating backoff as a fault", async () => {
+    await writeConfig();
+    for (const [day, confidence] of [
+      ["07", "high"],
+      ["08", "medium"],
+      ["09", "low"],
+    ] as const) {
+      await invoke(["tick"], {
+        now: at("07:00", day),
+        scripts: {
+          codex: {
+            probe: [
+              {
+                kind: "blocked",
+                reason: "rolling_window",
+                constraints: [
+                  {
+                    type: "rolling_window",
+                    resetAt: at("08:23", day),
+                    confidence,
+                  },
+                ],
+              },
+            ],
+          },
+        },
+      });
+    }
+
+    const { code, out } = await invoke(["doctor", "codex"], {
+      now: at("09:00", "09"),
+    });
+
+    expect(code).toBe(EXIT.ok);
+    expect(out).toContain("2 stated : 1 guessed");
+    expect(out).toContain("67% provider-stated (2/3)");
+    expect(out).toContain("source evidence, not measured prediction accuracy");
+    expect(out).not.toContain("Fake claude");
+  });
+
   it("reports a healthy machine as healthy", async () => {
     await writeConfig();
 

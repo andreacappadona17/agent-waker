@@ -55,15 +55,22 @@ agent waker
 Runtime: local · macOS
 Desired activation: 07:00 Europe/Rome
 
-Agent        State                  Last activation       Next action
-────────────────────────────────────────────────────────────────────────
-Claude Code ✓ Activated             today 07:00           tomorrow 07:00
-Codex       ⏳ Usage window limited  07:00                 08:24
+Agent        State                  Last activation  Next action     Reset confidence
+────────────────────────────────────────────────────────────────────────────────────────────────────────
+Claude Code ✓ Activated             today 07:00      tomorrow 07:00  no recorded reset sources
+Codex       ⏳ Usage window limited  today 07:00      today 08:24     100% provider-stated (1/1)
 
 Codex
   Current window resets at 08:23.
   agent waker will check again at 08:24.
 ```
+
+`status` shows the share of retained blocked observations whose scheduling
+used a provider-stated reset; `doctor` also reports the stated-vs-guessed counts.
+This is source evidence, not measured prediction accuracy. It uses local logs
+without a telemetry collector: the default retention is 14 days, older records
+without `reset_source` are excluded, and `logging.level: warn` or `error` omits
+these observations. Missing evidence is shown explicitly.
 
 ## Supported agents
 
