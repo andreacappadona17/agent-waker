@@ -84,7 +84,7 @@ export function createFakeAdapter(
   return {
     id,
     displayName: `Fake ${id}`,
-    capabilities: { probeMode },
+    capabilities: { probeMode, exactReset: true, weeklyLimitDetection: true },
     calls,
 
     async detect(context: AdapterContext): Promise<DetectionResult> {

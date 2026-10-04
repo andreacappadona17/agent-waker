@@ -28,7 +28,6 @@ import {
 } from "#src/config/config.js";
 import { AGENT_IDS, type AgentId } from "#src/core/agent.js";
 import type { AgentObservation } from "#src/core/observation.js";
-import { effectiveReset } from "#src/core/policy/retry.js";
 import { applyObservation, isDue } from "#src/core/policy/transition.js";
 import {
   needsAttention,
@@ -385,14 +384,21 @@ export async function tick(
       const recording = recordingRunner(context.runner, span);
       const startedAt = wallClock();
 
-      const observation = await observe(registry.get(agentId), {
+      const adapter = registry.get(agentId);
+      const observation = await observe(adapter, {
         runner: recording.runner,
         // Its own directory, so one provider cannot read what another left.
         workDir: join(context.workDir, agentId),
         now,
       });
       const durationMs = wallClock() - startedAt;
-      const next = applyObservation(effective, rolled, observation, now);
+      const next = applyObservation(
+        effective,
+        rolled,
+        observation,
+        now,
+        adapter.capabilities,
+      );
       // The provider's own words go to the log and no further: state holds the
       // classification, not raw output.
       const detail =
@@ -432,9 +438,7 @@ export async function tick(
           ...(observation.kind === "blocked"
             ? {
                 reset_source:
-                  effectiveReset(observation.constraints) === undefined
-                    ? "guessed"
-                    : "stated",
+                  next.blockedUntil === undefined ? "guessed" : "stated",
               }
             : {}),
           "agent.duration_ms": durationMs,

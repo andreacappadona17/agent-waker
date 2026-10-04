@@ -55,6 +55,12 @@ export interface AdapterConformanceFixture {
   readonly blockedWithoutReset: BlockCase;
   /** An unsupported case must explain why a timestamp cannot be asserted. */
   readonly blockedWithReset: BlockCase | { readonly unsupported: string };
+  readonly blockedWeeklyLimit:
+    | (BlockCase & {
+        /** Known resets take precedence over long-term weekly handling. */
+        readonly expectedPhase: "long_term_block" | "waiting_known_reset";
+      })
+    | { readonly unsupported: string };
 }
 
 export function adapterConformance(
@@ -238,15 +244,35 @@ export function adapterConformance(
 
     const withReset = fixture.blockedWithReset;
     if ("unsupported" in withReset) {
-      it.skip(`exact reset unsupported: ${withReset.unsupported}`);
+      it(`declares exact resets unsupported: ${withReset.unsupported}`, () => {
+        expect(adapter.capabilities.exactReset).toBe(false);
+      });
     } else {
       it("preserves the provider's exact reset", async () => {
+        expect(adapter.capabilities.exactReset).toBe(true);
         expect(
           withReset.expected.constraints.some((constraint) =>
             Number.isFinite(constraint.resetAt),
           ),
         ).toBe(true);
         await checkBlock(withReset);
+        expect(await runTick()).toMatchObject({ phase: "waiting_known_reset" });
+      });
+    }
+
+    const weekly = fixture.blockedWeeklyLimit;
+    if ("unsupported" in weekly) {
+      it(`declares weekly detection unsupported: ${weekly.unsupported}`, () => {
+        expect(adapter.capabilities.weeklyLimitDetection).toBe(false);
+      });
+    } else {
+      it("identifies a weekly Block and applies the expected policy", async () => {
+        expect(adapter.capabilities.weeklyLimitDetection).toBe(true);
+        await checkBlock(weekly);
+        expect(await runTick()).toMatchObject({
+          phase: weekly.expectedPhase,
+          reason: weekly.expected.reason,
+        });
       });
     }
 

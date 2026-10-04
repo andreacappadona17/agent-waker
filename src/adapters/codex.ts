@@ -190,7 +190,11 @@ export function createCodexAdapter(): AgentAdapter {
   return {
     id: "codex",
     displayName: "Codex CLI",
-    capabilities: { probeMode: "activation_is_probe" },
+    capabilities: {
+      probeMode: "activation_is_probe",
+      exactReset: false,
+      weeklyLimitDetection: false,
+    },
 
     async detect(context: AdapterContext): Promise<DetectionResult> {
       return toDetection(

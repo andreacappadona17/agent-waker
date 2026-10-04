@@ -7,6 +7,7 @@
  * of a five-hour window.
  */
 
+import type { AgentCapabilities } from "#src/adapters/contract.js";
 import type { EffectiveAgentConfig } from "#src/config/config.js";
 import type { AgentObservation } from "#src/core/observation.js";
 import {
@@ -79,6 +80,7 @@ export function applyObservation(
   state: AgentState,
   observation: AgentObservation,
   now: Instant,
+  capabilities: AgentCapabilities,
 ): AgentState {
   // Every observation belongs to a cycle; a state file missing its date is
   // adopted into today's rather than left unattached.
@@ -111,7 +113,14 @@ export function applyObservation(
       return build({ ...attempt, phase: "ready" });
 
     case "blocked":
-      return whenBlocked(config, state, observation, now, attempt);
+      return whenBlocked(
+        config,
+        state,
+        observation,
+        now,
+        attempt,
+        capabilities,
+      );
 
     case "auth_error":
       return build({
@@ -152,8 +161,11 @@ function whenBlocked(
   observation: Extract<AgentObservation, { kind: "blocked" }>,
   now: Instant,
   attempt: Attempt,
+  capabilities: AgentCapabilities,
 ): AgentState {
-  const resetAt = effectiveReset(observation.constraints);
+  const resetAt = capabilities.exactReset
+    ? effectiveReset(observation.constraints)
+    : undefined;
 
   // A stated reset outranks the ladder, however long the wait — a weekly limit
   // is not something a five-hour window can outlast.
@@ -172,12 +184,23 @@ function whenBlocked(
   // A reset already in the past cannot be waited for while the agent is still
   // blocked, so the honest reading is that the real reset time is unknown.
   const horizonEndsAt = retryHorizonAt(config, attempt.cycleDate);
-  const step = nextBackoffStep(
-    config.unknownResetDelaysMs,
-    quotaLadderIndex(state),
-    now,
-    horizonEndsAt,
-  );
+  // A positively identified weekly block cannot be outlasted by the normal
+  // window ladder. Keep the long-term cadence until the provider clears it.
+  const weeklyBlock =
+    capabilities.weeklyLimitDetection &&
+    (observation.reason === "weekly_limit" ||
+      observation.constraints.some(
+        (constraint) =>
+          constraint.type === "weekly" && constraint.confidence !== "low",
+      ));
+  const step = weeklyBlock
+    ? undefined
+    : nextBackoffStep(
+        config.unknownResetDelaysMs,
+        quotaLadderIndex(state),
+        now,
+        horizonEndsAt,
+      );
 
   return step === undefined
     ? build({

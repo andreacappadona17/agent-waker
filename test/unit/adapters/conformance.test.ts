@@ -1,10 +1,12 @@
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 
-import { expect, it } from "vitest";
+import { describe, expect, it } from "vitest";
 
+import { createCodexAdapter } from "#src/adapters/codex.js";
 import { defaultRegistry } from "#src/cli/context.js";
 import { AGENT_IDS, type AgentId } from "#src/core/agent.js";
+import type { BlockedObservation } from "#src/core/observation.js";
 import {
   adapterConformance,
   completed,
@@ -81,6 +83,9 @@ const fixtures: Record<AgentId, AdapterConformanceFixture> = {
     blockedWithReset: {
       unsupported: "The parsed result document has no reset timestamp.",
     },
+    blockedWeeklyLimit: {
+      unsupported: "The parsed 429 result does not identify a weekly limit.",
+    },
   },
   codex: {
     authArgs: ["login", "status"],
@@ -123,6 +128,9 @@ const fixtures: Record<AgentId, AdapterConformanceFixture> = {
     blockedWithReset: {
       unsupported: "The captured clock time has no date or timezone.",
     },
+    blockedWeeklyLimit: {
+      unsupported: "The captured usage-limit message does not name its window.",
+    },
   },
 };
 
@@ -137,3 +145,76 @@ it("requires conformance fixtures for every registered adapter and agent", () =>
 
 for (const adapter of adapters)
   adapterConformance(adapter, fixtures[adapter.id]);
+
+const knownWeeklyReset: BlockedObservation = {
+  kind: "blocked",
+  reason: "weekly_limit",
+  constraints: [
+    {
+      type: "weekly",
+      resetAt: Date.parse("2026-09-14T12:00:00Z"),
+      confidence: "high",
+    },
+  ],
+};
+
+describe.each([
+  {
+    name: "a trusted future reset",
+    observation: knownWeeklyReset,
+    expectedPhase: "waiting_known_reset" as const,
+  },
+  {
+    name: "a weekly constraint with an overall quota reason",
+    observation: {
+      kind: "blocked",
+      reason: "quota",
+      constraints: [{ type: "weekly", confidence: "medium" }],
+    } satisfies BlockedObservation,
+    expectedPhase: "long_term_block" as const,
+  },
+])("supported weekly fixtures: $name", ({ observation, expectedPhase }) => {
+  const base = createCodexAdapter();
+  const withReset = {
+    response: completed({
+      exitCode: 1,
+      stdout: '{"error":{"message":"Synthetic reset usage limit"}}\n',
+    }),
+    expected: knownWeeklyReset,
+  };
+  const block = {
+    response: completed({
+      exitCode: 1,
+      stdout: '{"error":{"message":"Synthetic weekly usage limit"}}\n',
+    }),
+    expected: observation,
+    expectedPhase,
+  };
+  adapterConformance(
+    {
+      ...base,
+      capabilities: {
+        ...base.capabilities,
+        exactReset: true,
+        weeklyLimitDetection: true,
+      },
+      async activate(context, detection, auth) {
+        const result = await base.activate(context, detection, auth);
+        if (
+          result.kind === "blocked" &&
+          result.detail === "Synthetic reset usage limit"
+        )
+          return knownWeeklyReset;
+        return result.kind === "blocked" &&
+          result.detail === "Synthetic weekly usage limit"
+          ? observation
+          : result;
+      },
+    },
+    {
+      ...fixtures.codex,
+      blockedWithReset: withReset,
+      blockedWeeklyLimit: block,
+    },
+  );
+});
