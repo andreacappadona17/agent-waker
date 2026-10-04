@@ -40,13 +40,15 @@ import { LockedError } from "#src/state/store.js";
  */
 function outcomeLine(
   agent: StatusAgentView,
-  untouched: ReadonlySet<AgentId>,
+  untouched: ReadonlySet<string>,
   view: PhaseContext,
   options: { unicode: boolean },
   width: number,
 ): string {
   const label =
-    agent.enabled && untouched.has(agent.agentId) && agent.phase === "activated"
+    agent.enabled &&
+    untouched.has(`${agent.agentId}/${agent.window ?? ""}`) &&
+    agent.phase === "activated"
       ? `already activated ${relativeTime(
           agent.lastActivationAt,
           view.now,
@@ -97,7 +99,7 @@ export async function runCommand(
     const untouched = new Set(
       result.agents
         .filter((outcome) => outcome.skipped === "not_due")
-        .map((outcome) => outcome.agentId),
+        .map((outcome) => `${outcome.agentId}/${outcome.window ?? ""}`),
     );
     const width = Math.max(...chosen.map((agent) => agent.displayName.length));
     const soonest = chosen

@@ -559,3 +559,35 @@ it("rejects unsupported scheduler intervals rather than silently ignoring them",
     ),
   ).toThrow(/tickInterval.*5m/);
 });
+
+it("accepts multiple global and per-agent activation windows", () => {
+  const config = parseConfig(
+    `${MINIMAL}schedule:\n  windows: ["16:00", "7:00"]\nagents:\n  codex:\n    schedule:\n      windows: ["09:00", "18:30"]\n`,
+    "config.yaml",
+  );
+  expect(config.schedule).toEqual({
+    windows: [
+      { hour: 7, minute: 0 },
+      { hour: 16, minute: 0 },
+    ],
+  });
+  expect(config.agents.codex.schedule).toEqual({
+    windows: [
+      { hour: 9, minute: 0 },
+      { hour: 18, minute: 30 },
+    ],
+  });
+});
+
+it.each([
+  ["schedule:\n  windows: []\n", /at least one/],
+  ['schedule:\n  windows: "07:00"\n', /list/],
+  ["schedule:\n  windows: null\n", /list/],
+  ['schedule:\n  windows: ["7:00", "07:00"]\n', /Duplicate/],
+  ['schedule:\n  windows: ["07:00", "25:00"]\n', /24-hour/],
+  ['schedule:\n  notBefore: "07:00"\n  windows: ["16:00"]\n', /not both/],
+  ['schedule: "07:00"\n', /mapping/],
+  ['agents:\n  codex:\n    schedule: ["09:00"]\n', /mapping/],
+])("rejects ambiguous or invalid activation windows: %s", (yaml, message) => {
+  expect(() => parseConfig(MINIMAL + yaml, "config.yaml")).toThrow(message);
+});

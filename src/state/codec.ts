@@ -18,7 +18,11 @@ import {
   type AgentState,
   type AgentWakerState,
 } from "#src/core/state.js";
-import type { Instant } from "#src/core/time.js";
+import {
+  formatLocalTime,
+  parseLocalTime,
+  type Instant,
+} from "#src/core/time.js";
 
 /** Raised when a state file cannot be read as state. */
 export class InvalidStateError extends Error {
@@ -45,7 +49,15 @@ export function encodeState(state: AgentWakerState): unknown {
   const agents: Record<string, unknown> = {};
 
   for (const agentId of AGENT_IDS) {
-    agents[agentId] = encodeAgent(state.agents[agentId]);
+    agents[agentId] =
+      state.version === 1
+        ? encodeAgent(state.agents[agentId])
+        : Object.fromEntries(
+            Object.entries(state.agents[agentId]).map(([window, cycle]) => [
+              window,
+              encodeAgent(cycle),
+            ]),
+          );
   }
 
   return {
@@ -87,7 +99,14 @@ function asRecord(value: unknown, what: string): Record<string, unknown> {
 
 /** Parses an ISO-8601 timestamp. Numbers are refused, not coerced. */
 function asInstant(value: unknown, what: string): Instant {
-  if (typeof value !== "string") reject(what, value);
+  if (
+    typeof value !== "string" ||
+    !/^\d{4}-\d{2}-\d{2}T(?:[01]\d|2[0-3]):[0-5]\d:[0-5]\d(?:\.\d{1,3})?(?:Z|[+-]\d{2}:[0-5]\d)$/.test(
+      value,
+    ) ||
+    !isLocalDate(value.slice(0, 10))
+  )
+    reject(what, value);
 
   const instant = Date.parse(value);
 
@@ -113,14 +132,52 @@ function asPhase(value: unknown, agentId: AgentId): AgentPhase {
 export function decodeState(raw: unknown): AgentWakerState {
   const document = asRecord(raw, "a state object");
 
-  if (document.version !== 1) {
+  if (document.version !== 1 && document.version !== 2) {
     throw new InvalidStateError(
       `This state file says version ${describeValue(document.version)}; ` +
-        `this build understands version 1. A newer agent waker may have written it.`,
+        `this build understands versions 1 and 2. A newer agent waker may have written it.`,
     );
   }
 
   const encodedAgents = asRecord(document.agents, "an agents object");
+  if (document.version === 2) {
+    const agents = {} as Record<AgentId, Record<string, AgentState>>;
+    for (const agentId of AGENT_IDS) {
+      const entries =
+        encodedAgents[agentId] === undefined
+          ? {}
+          : asRecord(encodedAgents[agentId], `cycles for ${agentId}`);
+      const cycles: Record<string, AgentState> = {};
+      for (const [window, entry] of Object.entries(entries)) {
+        try {
+          if (formatLocalTime(parseLocalTime(window)) !== window)
+            reject("a canonical HH:MM window identity", window);
+        } catch {
+          reject("a canonical HH:MM window identity", window);
+        }
+        const encoded = asRecord(entry, `a Cycle for ${agentId}/${window}`);
+        const known = new Set<string>([
+          "phase",
+          "cycleDate",
+          "reason",
+          "retryIndex",
+          ...INSTANT_FIELDS,
+        ]);
+        for (const field of Object.keys(encoded))
+          if (!known.has(field))
+            reject(`a known Cycle field for ${agentId}/${window}`, field);
+        if (encoded.phase !== "idle" && encoded.cycleDate === undefined)
+          reject(`a dated Cycle for ${agentId}/${window}`, encoded.cycleDate);
+        cycles[window] = decodeAgent(encoded, agentId);
+      }
+      agents[agentId] = cycles;
+    }
+    return {
+      version: 2,
+      updatedAt: asInstant(document.updatedAt, "an ISO-8601 updatedAt"),
+      agents,
+    };
+  }
   const agents = {} as Record<AgentId, AgentState>;
 
   for (const agentId of AGENT_IDS) {
@@ -152,7 +209,7 @@ function decodeAgent(
   const cycleDate = encoded.cycleDate;
 
   if (cycleDate !== undefined) {
-    if (typeof cycleDate !== "string" || !LOCAL_DATE_PATTERN.test(cycleDate)) {
+    if (!isLocalDate(cycleDate)) {
       reject(`a YYYY-MM-DD cycleDate for ${agentId}`, cycleDate);
     }
 
@@ -188,4 +245,13 @@ function decodeAgent(
   // Phase is attached last rather than filtered in, so it stays statically
   // present and the result needs no cast.
   return Object.assign({ phase }, state);
+}
+
+function isLocalDate(value: unknown): value is string {
+  return (
+    typeof value === "string" &&
+    LOCAL_DATE_PATTERN.test(value) &&
+    Number.isFinite(Date.parse(value)) &&
+    new Date(value).toISOString().slice(0, 10) === value
+  );
 }

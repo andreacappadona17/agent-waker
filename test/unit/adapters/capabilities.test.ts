@@ -1,3 +1,4 @@
+import { agentCycles } from "#src/core/state.js";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -57,7 +58,11 @@ describe.each(["separate", "activation_is_probe"] as const)(
       return {
         context,
         result,
-        state: (await store.load()).state.agents.claude,
+        state: agentCycles(
+          context.config,
+          (await store.load()).state,
+          "claude",
+        )["07:00"] ?? { phase: "idle" as const },
       };
     }
 

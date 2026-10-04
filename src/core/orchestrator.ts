@@ -22,6 +22,7 @@ import type {
   AdapterContext,
 } from "#src/adapters/contract.js";
 import {
+  activationTimes,
   effectiveAgentConfig,
   type AgentWakerConfig,
   type EffectiveAgentConfig,
@@ -30,13 +31,14 @@ import { AGENT_IDS, type AgentId } from "#src/core/agent.js";
 import type { AgentObservation } from "#src/core/observation.js";
 import { applyObservation, isDue } from "#src/core/policy/transition.js";
 import {
+  agentCycles,
   needsAttention,
   rollDailyCycle,
   type AgentPhase,
   type AgentState,
   type AgentWakerState,
 } from "#src/core/state.js";
-import type { Instant } from "#src/core/time.js";
+import { formatLocalTime, type Instant } from "#src/core/time.js";
 import type { Event, EventLog } from "#src/logging/log.js";
 import type { ProcessRunner, ProcessResult } from "#src/process/runner.js";
 import type { Span, Telemetry } from "#src/telemetry/otlp.js";
@@ -73,7 +75,7 @@ export interface TickOptions {
    *
    * Skips the timer, never the rate limit: a forced run still asks the
    * provider and still respects a block, and still will not activate an agent
-   * that has already completed today's cycle.
+   * that has already completed that window's Cycle today.
    */
   readonly force?: boolean;
   /**
@@ -89,6 +91,7 @@ export interface TickOptions {
 export interface AgentOutcome {
   readonly agentId: AgentId;
   readonly phase: AgentPhase;
+  readonly window?: string;
   readonly reason?: string;
   readonly nextAttemptAt?: Instant;
   /** Set when the agent was not evaluated, and why. */
@@ -222,7 +225,7 @@ function skipReason(
   if (!effective.enabled) return "disabled";
 
   // Forcing skips the schedule, but a cycle that is already complete stays
-  // complete: at most one successful activation per agent per local day.
+  // complete: at most one successful activation per agent, window and local date.
   const due = force
     ? rolled.phase !== "activated"
     : isDue(effective, rolled, now);
@@ -295,7 +298,12 @@ export async function tick(
       "agent_waker.forced": options.force === true,
     });
     const loaded = await store.load();
-    const agents: Record<AgentId, AgentState> = { ...loaded.state.agents };
+    const agents = Object.fromEntries(
+      AGENT_IDS.map((agentId) => [
+        agentId,
+        { ...agentCycles(config, loaded.state, agentId) },
+      ]),
+    ) as Record<AgentId, Record<string, AgentState>>;
     const outcomes: AgentOutcome[] = [];
 
     // One event, two sinks. Telemetry sees what the log sees rather than a
@@ -320,26 +328,30 @@ export async function tick(
         ? AGENT_IDS
         : AGENT_IDS.filter((id) => options.only?.includes(id) === true);
 
-    const plan = selected.map((agentId) => {
-      const effective: EffectiveAgentConfig = effectiveAgentConfig(
-        config,
-        agentId,
-      );
-      const rolled = rollDailyCycle(effective, agents[agentId], now);
-
-      return {
-        agentId,
-        effective,
-        rolled,
-        skipped: skipReason(effective, rolled, now, options.force === true),
-      };
-    });
-
-    // Every cycle rolls before anything is said, so the tick knows whether it
-    // is a no-op before it announces itself. A periodic scheduler that logs
-    // at `info` on every wake drowns the log it exists to write.
-    // Rolling is pure, so this costs nothing.
-    for (const { agentId, rolled } of plan) agents[agentId] = rolled;
+    const plan = selected.flatMap((agentId) =>
+      activationTimes(config, agentId).map((time) => {
+        const window = formatLocalTime(time);
+        const effective = effectiveAgentConfig(config, agentId, time);
+        const current = agents[agentId][window] ?? { phase: "idle" };
+        const rolled =
+          options.force === true && effective.enabled
+            ? rollDailyCycle(
+                { ...effective, notBefore: { hour: 0, minute: 0 } },
+                current,
+                now,
+              )
+            : rollDailyCycle(effective, current, now);
+        return {
+          agentId,
+          window,
+          effective,
+          rolled,
+          skipped: skipReason(effective, rolled, now, options.force === true),
+        };
+      }),
+    );
+    for (const { agentId, window, rolled } of plan)
+      agents[agentId][window] = rolled;
 
     const evaluated = plan.filter((entry) => entry.skipped === undefined);
 
@@ -366,9 +378,9 @@ export async function tick(
       });
     }
 
-    for (const { agentId, effective, rolled, skipped } of plan) {
+    for (const { agentId, window, effective, rolled, skipped } of plan) {
       if (skipped !== undefined) {
-        outcomes.push({ ...outcomeOf(agentId, rolled), skipped });
+        outcomes.push({ ...outcomeOf(agentId, rolled), window, skipped });
         continue;
       }
 
@@ -380,7 +392,11 @@ export async function tick(
         // then lose the record of having spent it.
       }
 
-      const span = root.span("agent.activation", { "agent.id": agentId });
+      const span = root.span("agent.activation", {
+        "agent.id": agentId,
+        "activation.window": window,
+        "cycle.date": rolled.cycleDate,
+      });
       const recording = recordingRunner(context.runner, span);
       const startedAt = wallClock();
 
@@ -408,10 +424,10 @@ export async function tick(
       const exitCode = recording.lastExitCode();
       const attention = needsAttention(next.phase);
 
-      agents[agentId] = next;
-      outcomes.push(outcomeOf(agentId, next));
+      agents[agentId][window] = next;
+      outcomes.push({ ...outcomeOf(agentId, next), window });
       // Commit each provider outcome before logging or contacting another agent.
-      await store.save({ version: 1, updatedAt: now, agents });
+      await store.save({ version: 2, updatedAt: now, agents });
 
       await emit(
         {
@@ -419,6 +435,8 @@ export async function tick(
           event: `agent.${next.phase}`,
           agent: agentId,
           fields: {
+            window,
+            cycleDate: next.cycleDate,
             ...(next.reason === undefined ? {} : { reason: next.reason }),
             ...(detail === undefined ? {} : { detail }),
             ...(observation.kind === "blocked"
@@ -461,7 +479,7 @@ export async function tick(
       });
     }
 
-    const saved: AgentWakerState = { version: 1, updatedAt: now, agents };
+    const saved: AgentWakerState = { version: 2, updatedAt: now, agents };
 
     if (evaluated.length === 0) await store.save(saved);
     root.end({

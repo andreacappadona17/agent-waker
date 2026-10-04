@@ -35,9 +35,9 @@ Commands:
 Options:
   --timezone <zone>       With init or schedule set, the working timezone
   --limit <n>             With logs, how many events to show
-  --time <hh:mm>          With init, the desired activation time
+  --time <times>          With init, HH:MM times separated by commas
   --agents <list>         With init, which agents to manage
-  --agent-times <list>    With init, overrides: claude=07:00,codex=08:00
+  --agent-times <list>    With init, overrides: claude=07:00|16:00,codex=08:00
   --agent <name>          With schedule set, change only this agent’s time
   --dry-run               With init or schedule set, preview and write nothing
   --repair                With init, rebuild the scheduler only
@@ -295,13 +295,13 @@ export async function run(environment: CliEnvironment): Promise<ExitCode> {
 
   try {
     if (parsed.command === "init") {
-      const { parseLocalTime, parseTimeZone } =
-        await import("#src/core/time.js");
-      const { parseAgentTimes } = await import("#src/cli/schedule.js");
+      const { parseTimeZone } = await import("#src/core/time.js");
+      const { parseAgentTimes, parseWindowTimes } =
+        await import("#src/cli/schedule.js");
       const time = parsed.options.get("--time");
       const timezone = parsed.options.get("--timezone");
       const selection = parsed.options.get("--agents");
-      if (time !== undefined) parseLocalTime(time);
+      if (time !== undefined) parseWindowTimes(time);
       if (timezone !== undefined) parseTimeZone(timezone);
       if (selection !== undefined && !/^none$/i.test(selection.trim())) {
         asAgents(selection.split(/[\s,]+/).filter(Boolean));

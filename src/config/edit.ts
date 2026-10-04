@@ -14,6 +14,7 @@ import {
   isCollection,
   isMap,
   isScalar,
+  isSeq,
   parseDocument,
   YAMLMap,
   type Document,
@@ -23,7 +24,7 @@ import { parseConfig } from "#src/config/config.js";
 
 export interface ConfigEdit {
   readonly path: readonly string[];
-  readonly value: string | number | boolean;
+  readonly value: string | number | boolean | readonly string[] | undefined;
 }
 
 /** Times must stay quoted, or a YAML 1.1 reader sees `07:00` as 420. */
@@ -76,7 +77,31 @@ function applyEdit(document: Document, edit: ConfigEdit): void {
   const previous = document.getIn([...edit.path], true) as
     Annotated | undefined;
 
-  document.setIn([...edit.path], edit.value);
+  if (edit.value === undefined) {
+    if (edit.path.at(-1) === "windows" && isSeq(previous)) {
+      previous.commentBefore = [
+        previous.commentBefore,
+        ...previous.items.flatMap((item) =>
+          isScalar(item) ? [item.commentBefore, item.comment] : [],
+        ),
+      ]
+        .filter((comment) => comment != null)
+        .join("\n");
+    }
+    if (previous?.comment != null || previous?.commentBefore != null) {
+      const parent = document.getIn(edit.path.slice(0, -1), true) as Annotated;
+      parent.commentBefore = [
+        parent.commentBefore,
+        previous.commentBefore,
+        previous.comment,
+      ]
+        .filter((comment) => comment != null)
+        .join("\n");
+    }
+    if (document.hasIn([...edit.path])) document.deleteIn([...edit.path]);
+    return;
+  }
+  document.setIn([...edit.path], document.createNode(edit.value));
 
   const written = document.getIn([...edit.path], true) as Annotated;
 
@@ -88,7 +113,41 @@ function applyEdit(document: Document, edit: ConfigEdit): void {
     written.commentBefore = previous.commentBefore;
   }
 
-  if (needsQuoting(edit.value)) written.type = "QUOTE_DOUBLE";
+  if (edit.path.at(-1) === "windows" && isSeq(previous) && isSeq(written)) {
+    for (const item of previous.items) {
+      if (!isScalar(item) || typeof item.value !== "string") continue;
+      const time = item.value.padStart(5, "0");
+      const surviving = written.items.find(
+        (candidate) => isScalar(candidate) && candidate.value === time,
+      );
+      if (isScalar(surviving)) {
+        if (item.comment != null) surviving.comment = item.comment;
+        if (item.commentBefore != null) {
+          surviving.commentBefore = item.commentBefore;
+        }
+      } else {
+        written.commentBefore = [
+          written.commentBefore,
+          item.commentBefore,
+          item.comment,
+        ]
+          .filter((comment) => comment != null)
+          .join("\n");
+      }
+    }
+  }
+
+  if (needsQuoting(edit.value) && isScalar(written))
+    written.type = "QUOTE_DOUBLE";
+  if (isSeq(written))
+    for (const item of written.items) {
+      if (
+        isScalar(item) &&
+        typeof item.value === "string" &&
+        needsQuoting(item.value)
+      )
+        item.type = "QUOTE_DOUBLE";
+    }
 }
 
 /**

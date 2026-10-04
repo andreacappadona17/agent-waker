@@ -7,8 +7,13 @@
  */
 
 import { AGENT_IDS, type AgentId } from "#src/core/agent.js";
-import type { EffectiveAgentConfig } from "#src/config/config.js";
 import {
+  activationTimes,
+  type AgentWakerConfig,
+  type EffectiveAgentConfig,
+} from "#src/config/config.js";
+import {
+  formatLocalTime,
   localDateAt,
   nextLocalDate,
   resolveLocalTime,
@@ -55,7 +60,7 @@ export function needsAttention(phase: AgentPhase): boolean {
   );
 }
 
-/** One agent's persisted state. */
+/** One agent's persisted Cycle state for one configured window. */
 export interface AgentState {
   readonly phase: AgentPhase;
 
@@ -80,15 +85,49 @@ export interface AgentState {
 }
 
 /** The whole persisted document. */
-export interface AgentWakerState {
+export interface LegacyAgentWakerState {
   readonly version: 1;
   /** Stamped by the store on save; zero means never written. */
   readonly updatedAt: Instant;
   readonly agents: Readonly<Record<AgentId, AgentState>>;
 }
 
+/** Canonical state: exactly one current Cycle per agent and stable window identity. */
+export interface WindowAgentWakerState {
+  readonly version: 2;
+  readonly updatedAt: Instant;
+  readonly agents: Readonly<
+    Record<AgentId, Readonly<Record<string, AgentState>>>
+  >;
+}
+export type AgentWakerState = LegacyAgentWakerState | WindowAgentWakerState;
+
+/** Imports legacy state once into the earliest effective configured window. */
+export function agentCycles(
+  config: AgentWakerConfig,
+  state: AgentWakerState,
+  agentId: AgentId,
+): Readonly<Record<string, AgentState>> {
+  if (state.version === 2) return state.agents[agentId];
+  const first = activationTimes(config, agentId)[0];
+  const legacy = state.agents[agentId];
+  const cycle =
+    legacy.phase !== "idle" && legacy.cycleDate === undefined
+      ? {
+          ...legacy,
+          cycleDate: localDateAt(
+            (legacy.phase === "activated"
+              ? legacy.lastActivationAt
+              : legacy.lastAttemptAt) ?? state.updatedAt,
+            config.timezone,
+          ),
+        }
+      : legacy;
+  return { [formatLocalTime(first)]: cycle };
+}
+
 /** The state of an installation that has never run. */
-export function emptyState(): AgentWakerState {
+export function emptyState(): LegacyAgentWakerState {
   const agents = {} as Record<AgentId, AgentState>;
 
   for (const agentId of AGENT_IDS) agents[agentId] = { phase: "idle" };
@@ -145,7 +184,8 @@ export function nextCycleAt(
  * The cycle turns over at `notBefore`, not at midnight, so the hours between
  * are still part of the previous day's cycle.
  *
- * A cycle that did not finish is not carried forward: a warmup has no
+ * This rolls one configured window only. A Cycle that did not finish is not
+ * carried forward into that window's next local date: an activation has no
  * value once a newer one is due, so an unfinished cycle collapses into today's
  * rather than queueing behind it. The exceptions are the two waits that are
  * still telling the truth — a known reset that has not yet passed, and a
