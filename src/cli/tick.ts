@@ -1,10 +1,10 @@
 /**
  * `tick`: the scheduler's entry point.
  *
- * Entirely non-interactive, quiet when nothing is due, and safe to run every
- * minute. An overlapping run is not an error — the second one steps aside and
- * reports success, because a scheduler that logs a failure every minute while
- * a slow run finishes is worse than one that says nothing.
+ * Entirely non-interactive, quiet when nothing is due, and safe to run on each
+ * scheduled wake. An overlapping run is not an error — the second one steps aside and
+ * reports success, because a scheduler that logs a failure every five minutes
+ * while a slow run finishes is worse than one that says nothing.
  *
  * This is also where telemetry leaves the machine, once, after the work is
  * done and the lock is released.
@@ -60,9 +60,9 @@ export async function runTick(
 
     // A tick that said nothing to the event log has nothing to say to a
     // collector either, and skipping the export keeps the
-    // common case off the network: on a minute-level schedule an unreachable
-    // collector would otherwise cost a connection attempt every minute. Driven
-    // by what was actually emitted rather than by whether an agent ran, so a
+    // common case off the network: on a five-minute schedule an unreachable
+    // collector would otherwise cost a connection attempt every five minutes.
+    // Driven by what was actually emitted rather than by whether an agent ran, so a
     // recovered or reset state file is still reported.
     worthExporting = result.notable;
 
@@ -74,7 +74,7 @@ export async function runTick(
 
     if (failure !== undefined) {
       // Debug, not warn: a collector that is unreachable on a train must not
-      // put a line in the log every minute. The scheduler kept working.
+      // put a line in the log every five minutes. The scheduler kept working.
       //
       // Swallowed: this runs in a `finally`, so a filesystem error here would
       // replace whatever the tick was about to return or throw.

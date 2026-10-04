@@ -55,7 +55,7 @@ describe("rollDailyCycle", () => {
   });
 
   it("opens the cycle when a tick arrives late", () => {
-    // The scheduler fires every minute, but a sleeping laptop means the first
+    // The scheduler fires every five minutes, but a sleeping laptop means the first
     // tick of the day can be hours after notBefore.
     expect(
       rollDailyCycle(config, { phase: "idle" }, MONDAY_07 + 4 * 3_600_000),

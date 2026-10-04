@@ -542,11 +542,20 @@ describe("effectiveAgentConfig", () => {
   });
 });
 
+it("accepts the five-minute scheduler interval", () => {
+  expect(() =>
+    parseConfig(
+      `${MINIMAL}runtime:\n  local:\n    tickInterval: 5m\n`,
+      "config.yaml",
+    ),
+  ).not.toThrow();
+});
+
 it("rejects unsupported scheduler intervals rather than silently ignoring them", () => {
   expect(() =>
     parseConfig(
       `${MINIMAL}\nruntime:\n  local:\n    tickInterval: 2m\n`,
       "config.yaml",
     ),
-  ).toThrow(/tickInterval.*60s/);
+  ).toThrow(/tickInterval.*5m/);
 });

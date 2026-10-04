@@ -45,19 +45,20 @@ const MAX_PROMPT_ATTEMPTS = 3;
  * What the scheduler does, once it is installed.
  *
  * The last line is the one that matters: what users worry about is a provider
- * being called every minute, and it is the schedule that runs that often, not
- * the agents (UX §6.7).
+ * being called every five minutes, and it is the schedule that runs that
+ * often, not the agents (UX §6.7).
  */
 const SCHEDULER_NOTE = `The background schedule is installed.
 
-  it checks what is due every minute
+  it checks what is due within five minutes while the computer is awake
+  it catches up due cycles after the computer wakes
   no terminal window needs to stay open
   agents are only contacted when one is actually due
 
 `;
 
-/** How often launchd wakes us. A minute is cheap and keeps drift invisible. */
-const TICK_INTERVAL_SECONDS = 60;
+/** Five minutes cuts idle wakes while keeping due work close to its window. */
+const TICK_INTERVAL_SECONDS = 300;
 
 /**
  * The starting configuration, with its own defaults written out.
@@ -78,6 +79,8 @@ version: 1
 # time below does not move across daylight-saving changes.
 timezone: UTC
 
+# The scheduler checks every five minutes while the computer is awake and
+# catches up due work after sleep. Agents are contacted only when due.
 schedule:
   # The earliest time to wake the agents. Not a guarantee of when they run.
   notBefore: "${DEFAULT_NOT_BEFORE}"

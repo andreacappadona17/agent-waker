@@ -337,8 +337,8 @@ export async function tick(
     });
 
     // Every cycle rolls before anything is said, so the tick knows whether it
-    // is a no-op before it announces itself. A minute-level scheduler that
-    // logs at `info` every minute drowns the log it exists to write.
+    // is a no-op before it announces itself. A periodic scheduler that logs
+    // at `info` on every wake drowns the log it exists to write.
     // Rolling is pure, so this costs nothing.
     for (const { agentId, rolled } of plan) agents[agentId] = rolled;
 

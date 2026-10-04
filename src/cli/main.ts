@@ -28,7 +28,7 @@ Commands:
   schedule set [time]     Preview and change desired activation times
   enable <agent...>       Include an agent in the daily cycle
   disable <agent...>      Leave an agent out of it
-  init                    Set up the configuration and the scheduler
+  init                    Set up configuration and the five-minute scheduler
   uninstall               Remove what agent waker installed
   help                    Show this message
 
