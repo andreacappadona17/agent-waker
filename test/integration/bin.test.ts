@@ -43,9 +43,9 @@ describe.skipIf(!existsSync(BIN))("the built CLI", () => {
         (error: unknown) => error as { code: number; stderr: string },
       );
 
-      // The real binary reads the real platform, and CI runs this on Linux
-      // too, where the honest answer is that there is no scheduler for it.
-      if (process.platform === "darwin") {
+      // The real binary reads the real platform: macOS and Linux support
+      // scheduling, while other platforms explain that they are unsupported.
+      if (process.platform === "darwin" || process.platform === "linux") {
         expect(failure?.code).toBe(2);
         expect(failure?.stderr).toContain("agent-waker init");
       } else {

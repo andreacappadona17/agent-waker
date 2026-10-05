@@ -3,7 +3,7 @@
  *
  * A composition of checks rather than a separate code path, so what it reports
  * is what the scheduler actually does. It changes nothing on this machine: it
- * never reinstalls a provider, never restores a file macOS removed, and never
+ * never reinstalls a provider, never restores a file the OS removed, and never
  * changes a setting. A diagnostic that repairs things as it goes cannot be
  * trusted to say what state a machine was in. The one thing it sends is a
  * probe span, and only to a collector the user configured.
@@ -84,7 +84,7 @@ async function writableCheck(directory: string): Promise<Check> {
       };
 }
 
-/** The scheduler's own health: configuration, state, and the LaunchAgent. */
+/** The scheduler's own health: configuration, state, and the native schedule. */
 async function schedulerSection(context: CommandContext): Promise<Section> {
   const checks: Check[] = [
     // Reaching here at all means the file parsed; saying so is still worth a
@@ -178,12 +178,27 @@ async function schedulerSection(context: CommandContext): Promise<Section> {
         ? {}
         : {
             advice: [
-              "The job is installed but launchd has not loaded it. Reinstall with:",
+              context.environment.platform === "linux"
+                ? "The timer is installed but systemd --user has not enabled and started it. Reinstall with:"
+                : "The job is installed but launchd has not loaded it. Reinstall with:",
               "",
               "  agent-waker init --repair",
             ],
           }),
     });
+    if (scheduler.definitionDrift === true) {
+      checks.push({
+        name: "scheduler configuration differs or cannot be verified",
+        outcome: "fail",
+        evidence: scheduler.jobPath,
+        advice: [
+          "The installed units or the manager's definitions differ from the expected schedule or cannot be verified.",
+          "Review and remove any overriding systemd user drop-ins, then rebuild with:",
+          "",
+          "  agent-waker init --repair",
+        ],
+      });
+    }
   }
 
   if (
@@ -197,7 +212,9 @@ async function schedulerSection(context: CommandContext): Promise<Section> {
       evidence: scheduler.nodePath ?? scheduler.launcherPath,
       advice: [
         "Removing this Node version will stop scheduled activations.",
-        "Repair needs a stable Node >=24 installation, such as Homebrew Node.",
+        context.environment.platform === "linux"
+          ? "Repair needs a stable Node >=24 installation from your system or a stable installation path."
+          : "Repair needs a stable Node >=24 installation, such as Homebrew Node.",
         "Switch the schedule to a stable interpreter with:",
         "",
         "  agent-waker init --repair",

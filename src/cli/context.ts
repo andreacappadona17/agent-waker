@@ -103,6 +103,7 @@ export function schedulerFor(context: CommandContext): SchedulerDriver {
     home: context.environment.home,
     uid: context.environment.uid,
     launcherDir: context.paths.launcherDir,
+    env: context.environment.env,
   });
 }
 

@@ -6,8 +6,8 @@ Align coding-agent subscription windows with when you work.
 [![CodeQL](https://github.com/andreacappadona17/agent-waker/actions/workflows/codeql.yml/badge.svg)](https://github.com/andreacappadona17/agent-waker/actions/workflows/codeql.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-> **macOS only for now.** Scheduling needs a launchd agent; any other platform
-> is refused rather than half-configured.
+> **macOS and Linux.** Scheduling uses a launchd agent on macOS or a
+> `systemd --user` timer on Linux, including WSL with systemd enabled.
 
 ## The problem
 
@@ -40,6 +40,19 @@ minutes, which reads state, does only what is due, and exits. Due activations
 and retries may run up to five minutes after their scheduled time while the
 computer is awake; the next tick catches up overdue work after sleep. Provider
 CLIs are invoked only when an agent is actually due, not on every tick.
+
+Linux needs systemd with a running user manager, `systemctl`, and an
+absolute `XDG_RUNTIME_DIR` from a logged-in session. Containers and distributions without
+systemd cannot install the schedule. WSL must have
+[systemd enabled](https://learn.microsoft.com/en-us/windows/wsl/systemd) and a
+running Linux instance; the timer cannot start a stopped WSL instance.
+
+The Linux timer catches up once after missed wall-clock wakes; that tick handles
+every due Cycle. It cannot wake a suspended computer. Without user lingering,
+the schedule runs while the user manager is running, usually from login until
+logout. Optional [user lingering](https://www.freedesktop.org/software/systemd/man/latest/loginctl.html)
+keeps the manager running after logout and starts it at boot; this is a user or
+administrator choice and agent waker never enables it automatically.
 
 After upgrading an existing installation, run `agent-waker init --repair` to
 replace its one-minute schedule. Legacy `runtime.local.tickInterval: 1m`
@@ -189,6 +202,14 @@ If agent waker itself was installed globally under nvm, reinstall it using the
 stable Node installation and run repair before removing the old nvm version.
 Repair reports a missing entry point and does not reinstall the package for you.
 
+On Linux, use a stable Node >=24 system installation and pass its absolute
+path with `--node-path` when needed. Unit files live under
+`${XDG_CONFIG_HOME:-~/.config}/systemd/user/`; the launcher and configuration
+use the same resolved XDG locations as the CLI. `agent-waker init --repair`
+reloads the manager and restarts the timer after updating the files. Early
+service failures are available through `journalctl --user -u agent-waker.service`;
+normal scheduling history remains in `agent-waker logs`.
+
 `agent-waker uninstall` removes the schedule, the configuration and the state,
 and touches none of your agents.
 
@@ -281,7 +302,7 @@ Three properties worth knowing:
 process lives: a collector that drops packets outright — a VPN down, a captive
 portal — holds the process for about ten seconds regardless, because that is
 the runtime's own connect timeout. It costs that only on ticks that had
-something to export, and `launchd` runs on a five-minute interval, so checks
+something to export, and the native scheduler runs on a five-minute interval, so checks
 can happen up to five minutes after they become due. Values above `30s` are
 refused for that reason.
 

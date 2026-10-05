@@ -288,9 +288,16 @@ async function stableNodePath(
         ? "No stable Node >=24 interpreter was found."
         : `Not a usable stable Node >=24 interpreter: ${requested}`,
       "An nvm version path (including a symlink to it) can disappear after an upgrade.",
-      "Install Node >=24 through a stable installation, for example `brew install node@24`,",
-      "then run `agent-waker init --repair --node-path /opt/homebrew/opt/node@24/bin/node`",
-      "(use /usr/local/opt/node@24/bin/node for Intel Homebrew, or your stable installation path).",
+      ...(context.environment.platform === "linux"
+        ? [
+            "Install Node >=24 through a stable system installation,",
+            "then run `agent-waker init --repair --node-path /absolute/stable/path/to/node`.",
+          ]
+        : [
+            "Install Node >=24 through a stable installation, for example `brew install node@24`,",
+            "then run `agent-waker init --repair --node-path /opt/homebrew/opt/node@24/bin/node`",
+            "(use /usr/local/opt/node@24/bin/node for Intel Homebrew, or your stable installation path).",
+          ]),
     ].join("\n"),
   );
 }
@@ -299,7 +306,7 @@ async function stableNodePath(
  * `init --repair`: the configuration is fine, the scheduler is not.
  *
  * The case this exists for is a Node upgrade or a reinstall, which leaves the
- * LaunchAgent pointing at a launcher that has moved.
+ * native schedule pointing at a launcher that has moved.
  */
 export async function repairCommand(
   context: CommandContext,
