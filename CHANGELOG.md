@@ -1,5 +1,30 @@
 # Changelog
 
+## [0.4.0](https://github.com/andreacappadona17/agent-waker/compare/agent-waker-v0.3.2...agent-waker-v0.4.0) (2026-10-05)
+
+
+### Features
+
+* **adapters:** enforce reset and weekly capabilities ([#38](https://github.com/andreacappadona17/agent-waker/issues/38)) ([7829612](https://github.com/andreacappadona17/agent-waker/commit/7829612903d8a30be258da6cad4c8f0c34c809c4))
+* **adapters:** support opt-in Gemini CLI OAuth ([#52](https://github.com/andreacappadona17/agent-waker/issues/52)) ([8398a26](https://github.com/andreacappadona17/agent-waker/commit/8398a2640e5c8e28b5b7e98565c35c8fc254462b))
+* **cli:** preview configuration schedules ([#35](https://github.com/andreacappadona17/agent-waker/issues/35)) ([722bc26](https://github.com/andreacappadona17/agent-waker/commit/722bc26e793b2aecfc0f03c29a3d13b948165f6e))
+* **cli:** report reset source confidence ([#39](https://github.com/andreacappadona17/agent-waker/issues/39)) ([53a83e0](https://github.com/andreacappadona17/agent-waker/commit/53a83e099e6d4dd7a5df312b92a4f3f967985292))
+* **scheduler:** support Linux systemd user timers ([#51](https://github.com/andreacappadona17/agent-waker/issues/51)) ([ca70754](https://github.com/andreacappadona17/agent-waker/commit/ca70754f3b1699f1163958986bbd91e72bae9086))
+* **scheduler:** support multiple activation windows ([#40](https://github.com/andreacappadona17/agent-waker/issues/40)) ([be91b6c](https://github.com/andreacappadona17/agent-waker/commit/be91b6cd5b9b5ce55df9db74d4c79f6a30665cc6))
+* **scheduler:** use five-minute background wakes ([#37](https://github.com/andreacappadona17/agent-waker/issues/37)) ([8bb0eba](https://github.com/andreacappadona17/agent-waker/commit/8bb0eba013094492f05fc00b4de7633be899ad5c))
+* **telemetry:** report reset source and state recovery ([#29](https://github.com/andreacappadona17/agent-waker/issues/29)) ([5611b8c](https://github.com/andreacappadona17/agent-waker/commit/5611b8c3e8a12ace00adae970a2713d266b94105))
+
+
+### Bug Fixes
+
+* **cli:** repair scheduler Node paths ([#34](https://github.com/andreacappadona17/agent-waker/issues/34)) ([e363e3e](https://github.com/andreacappadona17/agent-waker/commit/e363e3ef26e3ef5b279599734b0705a9b6c7a729))
+* harden credential redaction and patch dependencies ([#33](https://github.com/andreacappadona17/agent-waker/issues/33)) ([2ab1c65](https://github.com/andreacappadona17/agent-waker/commit/2ab1c65b04453215a2533deab1d5ac700ffa5b8e))
+
+
+### Performance Improvements
+
+* trim per-tick startup cost ([#32](https://github.com/andreacappadona17/agent-waker/issues/32)) ([9c750f0](https://github.com/andreacappadona17/agent-waker/commit/9c750f0c9ee04b49852b0b7b140c71429791bb88))
+
 ## [0.3.2](https://github.com/andreacappadona17/agent-waker/compare/agent-waker-v0.3.1...agent-waker-v0.3.2) (2026-09-09)
 
 
