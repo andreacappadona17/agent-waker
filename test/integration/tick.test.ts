@@ -126,6 +126,7 @@ const harness = (
   const adapters = {
     claude: createFakeAdapter("claude", scripts.claude ?? {}),
     codex: createFakeAdapter("codex", scripts.codex ?? {}),
+    gemini: createFakeAdapter("gemini", scripts.gemini ?? {}),
   };
   const store = createStateStore(join(directory, "state"));
   const log = createEventLog({ directory: join(directory, "logs") });
@@ -142,7 +143,11 @@ const harness = (
         {
           config: configuration,
           store,
-          registry: createRegistry([adapters.claude, adapters.codex]),
+          registry: createRegistry([
+            adapters.claude,
+            adapters.codex,
+            adapters.gemini,
+          ]),
           log,
           telemetry,
           runner,
@@ -190,11 +195,16 @@ describe("scenario A — both agents available", () => {
     expect(phases(await test.run(at("07:00")))).toEqual({
       claude: "activated",
       codex: "activated",
+      gemini: "idle",
     });
 
     const later = await test.run(at("09:00"));
 
-    expect(phases(later)).toEqual({ claude: "activated", codex: "activated" });
+    expect(phases(later)).toEqual({
+      claude: "activated",
+      codex: "activated",
+      gemini: "idle",
+    });
     expect(test.adapters.claude.calls.activate).toBe(1);
     expect(test.adapters.codex.calls.activate).toBe(1);
   });
@@ -204,9 +214,11 @@ describe("scenario A — both agents available", () => {
     const result = await test.run(at("06:59"));
 
     expect(test.adapters.claude.calls.detect).toBe(0);
-    expect(result.agents.every((agent) => agent.skipped === "not_due")).toBe(
-      true,
-    );
+    expect(
+      result.agents.every(
+        (agent) => agent.skipped === "not_due" || agent.skipped === "disabled",
+      ),
+    ).toBe(true);
   });
 
   it("catches up each agent when a tick arrives well after its opening", async () => {
@@ -215,6 +227,7 @@ describe("scenario A — both agents available", () => {
     expect(phases(await test.run(at("14:00")))).toEqual({
       claude: "activated",
       codex: "activated",
+      gemini: "idle",
     });
     expect(test.adapters.claude.calls.activate).toBe(1);
     expect(test.adapters.codex.calls.activate).toBe(1);
@@ -228,6 +241,7 @@ describe("scenario A — both agents available", () => {
     expect(phases(await test.run(at("07:00", "08")))).toEqual({
       claude: "activated",
       codex: "activated",
+      gemini: "idle",
     });
     expect(test.adapters.claude.calls.activate).toBe(2);
   });
@@ -244,6 +258,7 @@ describe("scenario B — a known reset", () => {
     expect(phases(first)).toMatchObject({
       claude: "activated",
       codex: "waiting_known_reset",
+      gemini: "idle",
     });
     expect(
       first.agents.find((agent) => agent.agentId === "codex")?.nextAttemptAt,
@@ -257,6 +272,7 @@ describe("scenario B — a known reset", () => {
 
     expect(phases(await test.run(at("08:24")))).toMatchObject({
       codex: "activated",
+      gemini: "idle",
     });
   });
 
@@ -267,9 +283,11 @@ describe("scenario B — a known reset", () => {
 
     expect(phases(await test.run(at("07:00")))).toMatchObject({
       codex: "waiting_known_reset",
+      gemini: "idle",
     });
     expect(phases(await test.run(at("14:00")))).toMatchObject({
       codex: "activated",
+      gemini: "idle",
     });
     expect(test.adapters.codex.calls.activate).toBe(1);
   });
@@ -491,6 +509,7 @@ describe("independent agents", () => {
     expect(phases(await test.run(at("07:00")))).toEqual({
       claude: "waiting_unknown_reset",
       codex: "activated",
+      gemini: "idle",
     });
   });
 
@@ -502,6 +521,7 @@ describe("independent agents", () => {
     expect(phases(await test.run(at("07:00")))).toEqual({
       claude: "unhealthy",
       codex: "activated",
+      gemini: "idle",
     });
   });
 });
@@ -1145,6 +1165,7 @@ it("imports one legacy success without consuming a new afternoon Cycle", async (
         lastActivationAt: at("07:00"),
       },
       codex: { phase: "idle" },
+      gemini: { phase: "idle" },
     },
   });
   const test = harness(
@@ -1169,6 +1190,7 @@ it("dates a legacy completed Cycle missing its date before considering another a
     agents: {
       claude: { phase: "activated", lastActivationAt: at("07:00") },
       codex: { phase: "idle" },
+      gemini: { phase: "idle" },
     },
   });
   const test = harness(
@@ -1184,7 +1206,11 @@ it("uses the saved date when a legacy completed Cycle has no activation timestam
   await store.save({
     version: 1,
     updatedAt: at("07:00"),
-    agents: { claude: { phase: "activated" }, codex: { phase: "idle" } },
+    agents: {
+      claude: { phase: "activated" },
+      codex: { phase: "idle" },
+      gemini: { phase: "idle" },
+    },
   });
   const test = harness();
   await test.run(at("09:00"), { only: ["claude"] });
@@ -1199,6 +1225,7 @@ it("adopts an undated legacy wait into a dated Cycle when it retries before the 
     agents: {
       claude: { phase: "waiting_unknown_reset", nextAttemptAt: at("06:00") },
       codex: { phase: "idle" },
+      gemini: { phase: "idle" },
     },
   });
   const test = harness();
@@ -1273,6 +1300,7 @@ it("persists an undated disabled legacy wait safely while another agent complete
     agents: {
       claude: { phase: "waiting_known_reset", blockedUntil: at("18:00") },
       codex: { phase: "idle" },
+      gemini: { phase: "idle" },
     },
   });
   const test = harness(

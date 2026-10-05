@@ -87,6 +87,73 @@ const fixtures: Record<AgentId, AdapterConformanceFixture> = {
       unsupported: "The parsed 429 result does not identify a weekly limit.",
     },
   },
+  gemini: {
+    version: "0.62.0",
+    authArgs: [
+      "--prompt",
+      "Respond with OK only.",
+      "--output-format",
+      "json",
+      "--ignore-env",
+      "-e",
+      "none",
+      "--allowed-mcp-server-names",
+      /^agent-waker-no-mcp-[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
+    ],
+    helpArgs: ["--help"],
+    activationArgs: [
+      "--prompt",
+      "Respond with OK only.",
+      "--output-format",
+      "json",
+      "--ignore-env",
+      "-e",
+      "none",
+      "--allowed-mcp-server-names",
+      /^agent-waker-no-mcp-[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
+    ],
+    // Source-synthetic native v0.62.0 examples; no live run is claimed.
+    help: "--prompt --output-format --ignore-env -e --allowed-mcp-server-names",
+    auth: {
+      subscription: {
+        response: completed({
+          exitCode: 53,
+          stderr:
+            '[ERROR] {"error":{"type":"FatalTurnLimitedError","message":"Reached max session turns for this session. Increase the number of turns by specifying maxSessionTurns in settings.json.","code":53}}',
+        }),
+        expected: subscription,
+      },
+      signedOut: { response: completed({ exitCode: 41 }), expected: signedOut },
+      unsupported: {
+        response: completed({ exitCode: 53, stderr: "unrecognized" }),
+        expected: {
+          authenticated: false,
+          mode: "unknown",
+          supportsIntent: false,
+        },
+      },
+    },
+    success: completed({ stdout: '{"response":"OK"}' }),
+    blockedWithoutReset: {
+      // Real historical stderr; terminal exit is synthetic and unspecified upstream.
+      response: completed({
+        exitCode: 1,
+        stderr: await fixture("gemini", "quota-23665-published.txt"),
+      }),
+      expected: {
+        kind: "blocked",
+        reason: "quota",
+        constraints: [{ type: "quota", confidence: "high" }],
+      },
+    },
+    blockedWithReset: {
+      unsupported:
+        "The published relative duration has no absolute provider reset.",
+    },
+    blockedWeeklyLimit: {
+      unsupported: "Gemini quota evidence does not identify a weekly window.",
+    },
+  },
   codex: {
     authArgs: ["login", "status"],
     helpArgs: ["exec", "--help"],

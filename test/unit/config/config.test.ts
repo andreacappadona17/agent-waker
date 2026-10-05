@@ -74,6 +74,7 @@ describe("parseConfig", () => {
       agents: {
         claude: { enabled: true },
         codex: { enabled: true },
+        gemini: { enabled: false },
       },
     });
   });
@@ -98,6 +99,7 @@ describe("parseConfig", () => {
       agents: {
         claude: { enabled: true },
         codex: { enabled: true },
+        gemini: { enabled: false },
       },
     });
   });
@@ -370,7 +372,7 @@ retry:
 
     it("names the agents it does know", () => {
       expect(
-        failure(`${MINIMAL}agents:\n  gemini:\n    enabled: true\n`),
+        failure(`${MINIMAL}agents:\n  unsupported-agent:\n    enabled: true\n`),
       ).toHaveProperty("message", expect.stringContaining("claude"));
     });
   });
@@ -467,10 +469,11 @@ retry:
   });
 
   describe("agents", () => {
-    it("enables every known agent when the section is absent", () => {
+    it("keeps established agents enabled and Gemini opted out when the section is absent", () => {
       expect(parseConfig(MINIMAL, "config.yaml").agents).toEqual({
         claude: { enabled: true },
         codex: { enabled: true },
+        gemini: { enabled: false },
       });
     });
 
@@ -481,6 +484,7 @@ retry:
       ).toEqual({
         claude: { enabled: false },
         codex: { enabled: true },
+        gemini: { enabled: false },
       });
     });
 

@@ -1,0 +1,156 @@
+/**
+ * Copyright 2025 Google LLC
+ * SPDX-License-Identifier: Apache-2.0
+ * v0.62.0 selected settingsSchema.ts, utils/deepMerge.ts and agents/registry.ts.
+ * The schema is narrowed to enableAgents. Deep merge runs unchanged (imports
+ * substituted). Startup retains the original gate, user discovery/registration
+ * and card-load statements in a small wrapper; project/built-in/extension paths,
+ * hashing and post-card registration are omitted. Directory/card clients and
+ * logging are substituted at the provider boundary. This is not the native CLI.
+ */
+const enableAgentsSchema = {
+      enableAgents: {
+        type: 'boolean',
+        label: 'Enable Agents',
+        category: 'Experimental',
+        requiresRestart: true,
+        default: true,
+        description: 'Enable local and remote subagents.',
+        showInDialog: false,
+      },
+};
+export type Mergeable =
+  | string
+  | number
+  | boolean
+  | null
+  | undefined
+  | object
+  | Mergeable[];
+
+export type MergeableObject = Record<string, Mergeable>;
+
+function isPlainObject(item: unknown): item is MergeableObject {
+  return !!item && typeof item === 'object' && !Array.isArray(item);
+}
+
+function mergeRecursively(
+  target: MergeableObject,
+  source: MergeableObject,
+  getMergeStrategyForPath: (path: string[]) => MergeStrategy | undefined,
+  path: string[] = [],
+) {
+  for (const key of Object.keys(source)) {
+    // JSON.parse can create objects with __proto__ as an own property.
+    // We must skip it to prevent prototype pollution.
+    if (key === '__proto__' || key === 'constructor' || key === 'prototype') {
+      continue;
+    }
+    const srcValue = source[key];
+    if (srcValue === undefined) {
+      continue;
+    }
+    const newPath = [...path, key];
+    const objValue = target[key];
+    const mergeStrategy = getMergeStrategyForPath(newPath);
+
+    if (mergeStrategy === MergeStrategy.SHALLOW_MERGE && objValue && srcValue) {
+      const obj1 =
+        typeof objValue === 'object' && objValue !== null ? objValue : {};
+      const obj2 =
+        typeof srcValue === 'object' && srcValue !== null ? srcValue : {};
+      target[key] = { ...obj1, ...obj2 };
+      continue;
+    }
+
+    if (Array.isArray(objValue)) {
+      const srcArray = Array.isArray(srcValue) ? srcValue : [srcValue];
+      if (mergeStrategy === MergeStrategy.CONCAT) {
+        target[key] = objValue.concat(srcArray);
+        continue;
+      }
+      if (mergeStrategy === MergeStrategy.UNION) {
+        target[key] = [...new Set(objValue.concat(srcArray))];
+        continue;
+      }
+    }
+
+    if (isPlainObject(objValue) && isPlainObject(srcValue)) {
+      mergeRecursively(objValue, srcValue, getMergeStrategyForPath, newPath);
+    } else if (isPlainObject(srcValue)) {
+      target[key] = {};
+      mergeRecursively(
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion
+        target[key] as MergeableObject,
+        srcValue,
+        getMergeStrategyForPath,
+        newPath,
+      );
+    } else {
+      target[key] = srcValue;
+    }
+  }
+  return target;
+}
+
+export function customDeepMerge(
+  getMergeStrategyForPath: (path: string[]) => MergeStrategy | undefined,
+  ...sources: MergeableObject[]
+): MergeableObject {
+  const result: MergeableObject = {};
+
+  for (const source of sources) {
+    if (source) {
+      mergeRecursively(result, source, getMergeStrategyForPath);
+    }
+  }
+
+  return result;
+}
+
+class NativeUserAgentStartup {
+  constructor(config) { this.config = config; }
+  async initialize(errors) {
+    if (!this.config.isAgentsEnabled()) {
+      return;
+    }
+
+    // Load user-level agents: ~/.gemini/agents/
+    const userAgentsDir = Storage.getUserAgentsDir();
+    const userAgents = await loadAgentsFromDirectory(userAgentsDir);
+    for (const error of userAgents.errors) {
+      debugLogger.warn(
+        `[AgentRegistry] Error loading user agent: ${error.message}`,
+      );
+      const msg = `Agent loading error: ${error.message}`;
+      errors?.push(msg);
+      coreEvents.emitFeedback('error', msg);
+    }
+    await Promise.allSettled(
+      userAgents.agents.map(async (agent) => {
+        try {
+          this.ensureRemoteAgentHash(agent);
+          await this.registerAgent(agent, errors);
+        } catch (e) {
+          const msg = `Error registering user agent "${agent.name}": ${e instanceof Error ? e.message : String(e)}`;
+          debugLogger.warn(`[AgentRegistry] ${msg}`, e);
+          errors?.push(msg);
+          coreEvents.emitFeedback('error', msg);
+        }
+      }),
+    );
+
+  }
+  ensureRemoteAgentHash() {}
+  async registerAgent(remoteDef) {
+    const clientManager = this.config.getA2AClientManager();
+    // This known fixture has no auth config; no auth-provider leaf is invoked.
+    const authHandler = undefined;
+      const agentCard = await clientManager.loadAgent(
+        remoteDef.name,
+        getAgentCardLoadOptions(remoteDef),
+        authHandler,
+      );
+
+  }
+}

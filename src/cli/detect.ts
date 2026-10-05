@@ -1,12 +1,11 @@
 /**
  * `detect`: what is installed, and whether it can be used.
  *
- * Read-only by contract. It changes nothing, installs nothing, and repairs
- * nothing — a diagnostic that fixes things as a side effect is one nobody can
- * trust to tell them what state they are actually in.
+ * It installs and repairs nothing. Gemini auth validation prepares controlled
+ * settings in its dedicated profile; credentials remain provider-managed.
  */
 
-import { join } from "node:path";
+import { adapterWorkDirectory } from "#src/adapters/work-directory.js";
 
 import type { AuthResult, DetectionResult } from "#src/adapters/contract.js";
 import type { CommandContext } from "#src/cli/context.js";
@@ -74,7 +73,12 @@ export async function surveyAgents(
     const adapter = context.registry.get(agentId);
     const adapterContext = {
       runner: context.runner,
-      workDir: join(context.paths.workDir, agentId),
+      workDir: adapterWorkDirectory(
+        context.paths.workDir,
+        agentId,
+        context.paths.providerHome,
+      ),
+      providerHome: context.paths.providerHome,
       now: context.environment.now(),
     };
     const detection = await adapter.detect(adapterContext);

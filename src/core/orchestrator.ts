@@ -12,8 +12,6 @@
  * observation vocabulary the policy speaks.
  */
 
-import { join } from "node:path";
-
 import type { AdapterRegistry } from "#src/adapters/registry.js";
 import type {
   AuthResult,
@@ -40,6 +38,7 @@ import {
 } from "#src/core/state.js";
 import { formatLocalTime, type Instant } from "#src/core/time.js";
 import type { Event, EventLog } from "#src/logging/log.js";
+import { adapterWorkDirectory } from "#src/adapters/work-directory.js";
 import type { ProcessRunner, ProcessResult } from "#src/process/runner.js";
 import type { Span, Telemetry } from "#src/telemetry/otlp.js";
 import type { StateStore } from "#src/state/store.js";
@@ -54,6 +53,7 @@ export interface TickContext {
   readonly runner: ProcessRunner;
   /** An empty directory for adapters to run providers in. */
   readonly workDir: string;
+  readonly providerHome?: string;
   readonly runtime: "local" | "github";
   /** Read once per tick, so every decision in it shares one instant. */
   readonly now: () => Instant;
@@ -404,7 +404,12 @@ export async function tick(
       const observation = await observe(adapter, {
         runner: recording.runner,
         // Its own directory, so one provider cannot read what another left.
-        workDir: join(context.workDir, agentId),
+        workDir: adapterWorkDirectory(
+          context.workDir,
+          agentId,
+          context.providerHome,
+        ),
+        providerHome: context.providerHome,
         now,
       });
       const durationMs = wallClock() - startedAt;

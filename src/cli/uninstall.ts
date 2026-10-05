@@ -13,6 +13,7 @@ import { realpath, rm, rmdir } from "node:fs/promises";
 import { isAbsolute, join, relative } from "node:path";
 
 import { schedulerFor, type CommandContext } from "#src/cli/context.js";
+import { assertProviderHomeOutsideCleanup } from "#src/cli/paths.js";
 import { EXIT, type ExitCode } from "#src/cli/exit.js";
 
 /** Everything the state directory holds apart from the logs. */
@@ -47,7 +48,8 @@ export async function uninstallCommand(
       ...(options.includeLogs
         ? []
         : ["Logs are kept. Add --logs to remove them as well.", ""]),
-      "Claude Code and Codex are left alone; agent waker did not install them.",
+      "Claude Code, Codex and Gemini CLI are left alone; agent waker did not install them.",
+      "The dedicated Gemini login profile is kept.",
       "",
     ].join("\n"),
   );
@@ -63,6 +65,7 @@ export async function uninstallCommand(
   }
 
   await context.store.withLock(async () => {
+    await assertProviderHomeOutsideCleanup(paths);
     const nested = relative(
       await realpath(paths.workDir),
       await realpath(paths.stateDir),

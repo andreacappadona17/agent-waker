@@ -1,0 +1,19 @@
+Error generating content via API with model gemini-3-flash-preview. Full report available at: /tmp/gemini-client-error-generateContent-api-2026-03-24T13-01-53-229Z.json TerminalQuotaError: You have exhausted your capacity on this model. Your quota will reset after 8h42m34s.
+    at classifyGoogleError (file:///home/kira/.local/lib/node_modules/@google/gemini-cli/node_modules/@google/gemini-cli-core/dist/src/utils/googleQuotaErrors.js:252:28)
+    at retryWithBackoff (file:///home/kira/.local/lib/node_modules/@google/gemini-cli/node_modules/@google/gemini-cli-core/dist/src/utils/retry.js:153:37)
+    at process.processTicksAndRejections (node:internal/process/task_queues:103:5)
+    at async GeminiClient.generateContent (file:///home/kira/.local/lib/node_modules/@google/gemini-cli/node_modules/@google/gemini-cli-core/dist/src/core/client.js:722:28)
+    at async WebSearchToolInvocation.execute (file:///home/kira/.local/lib/node_modules/@google/gemini-cli/node_modules/@google/gemini-cli-core/dist/src/tools/web-search.js:28:30)
+    at async executeToolWithHooks (file:///home/kira/.local/lib/node_modules/@google/gemini-cli/node_modules/@google/gemini-cli-core/dist/src/core/coreToolHookTriggers.js:123:22)
+    at async file:///home/kira/.local/lib/node_modules/@google/gemini-cli/node_modules/@google/gemini-cli-core/dist/src/scheduler/tool-executor.js:68:36
+    at async file:///home/kira/.local/lib/node_modules/@google/gemini-cli/node_modules/@google/gemini-cli-core/dist/src/telemetry/trace.js:81:20
+    at async Scheduler._execute (file:///home/kira/.local/lib/node_modules/@google/gemini-cli/node_modules/@google/gemini-cli-core/dist/src/scheduler/scheduler.js:423:24)
+    at async Promise.all (index 0) {
+  cause: {
+    code: 429,
+    message: 'You have exhausted your capacity on this model. Your quota will reset after 8h42m34s.',
+    details: [ [Object], [Object] ]
+  },
+  retryDelayMs: 31354993.276109,
+  reason: 'QUOTA_EXHAUSTED'
+}

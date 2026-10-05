@@ -10,6 +10,7 @@ import { mkdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
 
 import { createClaudeAdapter } from "#src/adapters/claude.js";
+import { createGeminiAdapter } from "#src/adapters/gemini.js";
 import { createCodexAdapter } from "#src/adapters/codex.js";
 import {
   createRegistry,
@@ -20,7 +21,11 @@ import {
   parseConfig,
   type AgentWakerConfig,
 } from "#src/config/config.js";
-import { resolvePaths, type Paths } from "#src/cli/paths.js";
+import {
+  resolvePaths,
+  assertProviderHomeOutsideCleanup,
+  type Paths,
+} from "#src/cli/paths.js";
 import { AGENT_IDS } from "#src/core/agent.js";
 import type { Instant } from "#src/core/time.js";
 import { createEventLog, type EventLog } from "#src/logging/log.js";
@@ -109,7 +114,11 @@ export function schedulerFor(context: CommandContext): SchedulerDriver {
 
 /** The adapters this build ships. */
 export function defaultRegistry(): AdapterRegistry {
-  return createRegistry([createClaudeAdapter(), createCodexAdapter()]);
+  return createRegistry([
+    createClaudeAdapter(),
+    createCodexAdapter(),
+    createGeminiAdapter(),
+  ]);
 }
 
 /**
@@ -123,6 +132,7 @@ export async function openContext(
   options: { allowMissingConfig?: boolean; readOnly?: boolean } = {},
 ): Promise<CommandContext> {
   const paths = resolvePaths(environment.env, environment.home);
+  await assertProviderHomeOutsideCleanup(paths);
   const source = await readFile(paths.config, "utf8").catch(() => undefined);
 
   if (source === undefined && options.allowMissingConfig !== true) {

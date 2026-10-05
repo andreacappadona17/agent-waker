@@ -7,7 +7,8 @@
  * and the CLI have to agree about them exactly.
  */
 
-import { join } from "node:path";
+import { realpath } from "node:fs/promises";
+import { join, dirname, basename, relative, isAbsolute } from "node:path";
 
 export interface Paths {
   /** The configuration file itself. */
@@ -18,6 +19,8 @@ export interface Paths {
   readonly cacheDir: string;
   /** An empty directory for providers to run in. Disposable. */
   readonly workDir: string;
+  /** Persistent Gemini-managed credentials, retained on uninstall. */
+  readonly providerHome: string;
   /** Holds the launcher the native scheduler invokes. */
   readonly launcherDir: string;
 }
@@ -65,6 +68,7 @@ export function resolvePaths(
   );
 
   return {
+    providerHome: join(home, ".agent-waker-gemini"),
     configDir,
     config: join(configDir, "config.yaml"),
     stateDir,
@@ -75,4 +79,38 @@ export function resolvePaths(
     workDir: join(cacheDir, "work"),
     launcherDir: join(dataDir, "bin"),
   };
+}
+
+/** Resolve existing ancestors too, so an XDG symlink cannot hide containment. */
+async function canonical(path: string): Promise<string> {
+  try {
+    return await realpath(path);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    return join(await canonical(dirname(path)), basename(path));
+  }
+}
+
+/** A retained provider login must never sit under app cleanup targets. */
+export async function assertProviderHomeOutsideCleanup(
+  paths: Paths,
+): Promise<void> {
+  const home = await canonical(paths.providerHome);
+  for (const root of [
+    paths.configDir,
+    paths.stateDir,
+    paths.cacheDir,
+    paths.workDir,
+    paths.logDir,
+    paths.launcherDir,
+  ]) {
+    const nested = relative(await canonical(root), home);
+    if (
+      nested === "" ||
+      (nested !== ".." && !nested.startsWith("../") && !isAbsolute(nested))
+    )
+      throw new Error(
+        "The provider profile overlaps an application cleanup directory. Move the XDG directories before continuing.",
+      );
+  }
 }

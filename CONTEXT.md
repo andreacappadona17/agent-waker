@@ -8,7 +8,7 @@ window, as early as you asked for it.
 
 **Agent**:
 A coding-agent product agent waker schedules and keeps usable (Claude Code,
-Codex), identified by an `AgentId`. The unit a user enables and the scheduler
+Codex, Gemini CLI), identified by an `AgentId`. The unit a user enables and the scheduler
 drives.
 _Avoid_: assistant, bot, tool
 

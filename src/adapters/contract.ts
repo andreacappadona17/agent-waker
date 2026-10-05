@@ -22,6 +22,8 @@ export interface AdapterContext {
    * repository's own agent instructions or modify a user's project.
    */
   readonly workDir: string;
+  /** Dedicated provider-managed Gemini home; credentials are never inspected. */
+  readonly providerHome?: string | undefined;
   /** Reading the clock is the core's job; this is what it read. */
   readonly now: Instant;
 }

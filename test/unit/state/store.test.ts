@@ -29,6 +29,7 @@ const stateAt = (updatedAt: number): AgentWakerState => ({
   agents: {
     claude: { phase: "activated", cycleDate: "2026-09-06" },
     codex: { phase: "idle" },
+    gemini: { phase: "idle" },
   },
 });
 
