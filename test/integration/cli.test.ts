@@ -1,9 +1,11 @@
 import {
   chmod,
   copyFile,
+  lstat,
   mkdir,
   mkdtemp,
   readFile,
+  realpath,
   readdir,
   rm,
   stat,
@@ -12,7 +14,7 @@ import {
 } from "node:fs/promises";
 import { createServer, type Server } from "node:http";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
@@ -33,6 +35,10 @@ import {
 } from "#src/process/runner.js";
 import { createStateStore } from "#src/state/store.js";
 import { createFakeAdapter, type FakeScript } from "../support/fake-adapter.js";
+import {
+  createSystemdUserManager,
+  systemdUnitPathOutput,
+} from "../support/systemd-user-manager.js";
 
 let home: string;
 
@@ -908,7 +914,7 @@ describe("an unsupported platform", () => {
   it("refuses rather than half working", async () => {
     await writeConfig();
 
-    const { code, err } = await invoke(["status"], { platform: "linux" });
+    const { code, err } = await invoke(["status"], { platform: "freebsd" });
 
     // Exit 4 has been in the contract and the help text since the router was
     // written, and nothing returned it until now.
@@ -1942,7 +1948,14 @@ describe("init", () => {
   const installs: ProcessRunner = {
     run: (spec): Promise<ProcessResult> =>
       Promise.resolve({
-        stdout: spec.args[0] === "--version" ? "v24.1.0\n" : "",
+        stdout: spec.args.includes("--property=UnitPath")
+          ? systemdUnitPathOutput([
+              join(home, ".config", "systemd", "user.control"),
+              join(home, ".config", "systemd", "user"),
+            ])
+          : spec.args[0] === "--version"
+            ? "v24.1.0\n"
+            : "",
         stderr: "",
         exitCode: 0,
         signal: null,
@@ -1967,6 +1980,502 @@ describe("init", () => {
       runner: options.runner ?? installs,
     });
   };
+
+  it("installs, diagnoses, repairs and removes the Linux user timer using resolved XDG paths", async () => {
+    const env = {
+      XDG_CONFIG_HOME: join(home, "config with % and ' quotes"),
+      XDG_DATA_HOME: join(home, "data with $ and spaces"),
+      XDG_STATE_HOME: join(home, "state"),
+      XDG_CACHE_HOME: join(home, "cache"),
+      XDG_RUNTIME_DIR: join(home, "runtime"),
+      DBUS_SESSION_BUS_ADDRESS: "unix:path=/test/runtime/bus",
+    };
+    const runner: ProcessRunner = {
+      async run(spec) {
+        if (spec.args.includes("--property=UnitPath"))
+          return installs.run(spec);
+        if (spec.args.includes("is-system-running"))
+          return { ...(await installs.run(spec)), stdout: "running\n" };
+        if (spec.args.includes("show"))
+          return {
+            ...(await installs.run(spec)),
+            stdout:
+              "LoadState=loaded\nActiveState=active\nUnitFileState=enabled\n",
+          };
+        return installs.run(spec);
+      },
+    };
+    const nvmNode = join(
+      home,
+      ".nvm",
+      "versions",
+      "node",
+      "v24.1.0",
+      "bin",
+      "node",
+    );
+    await mkdir(dirname(nvmNode), { recursive: true });
+    await writeFile(nvmNode, "#!/bin/sh\n", { mode: 0o755 });
+    const options = { platform: "linux", env, runner };
+    const installed = await setUp(["init", "--agents", "none"], {
+      ...options,
+      execPath: nvmNode,
+    });
+    expect(installed.err).toBe("");
+    expect(installed.code).toBe(EXIT.ok);
+    const timer = join(
+      env.XDG_CONFIG_HOME,
+      "systemd",
+      "user",
+      "agent-waker.timer",
+    );
+    expect(await readFile(timer, "utf8")).toContain(
+      "OnCalendar=*-*-* *:0/5:00",
+    );
+    const savedConfig = await readFile(
+      join(env.XDG_CONFIG_HOME, "agent-waker", "config.yaml"),
+      "utf8",
+    );
+    expect((await invoke(["doctor"], options)).out).toContain(
+      "version-specific nvm interpreter",
+    );
+    await rm(nvmNode);
+    expect((await invoke(["doctor"], options)).out).toContain(
+      "scheduler Node interpreter is missing or not executable",
+    );
+    expect((await setUp(["init", "--repair"], options)).code).toBe(EXIT.ok);
+    const diagnosed = await invoke(["doctor"], options);
+    expect(diagnosed.out).toContain("scheduler is loaded");
+    expect(diagnosed.out).not.toContain("version-specific nvm interpreter");
+    const disabled = await invoke(["doctor"], {
+      ...options,
+      runner: {
+        async run(spec) {
+          const result = await runner.run(spec);
+          return spec.args.includes("show")
+            ? {
+                ...result,
+                stdout:
+                  "LoadState=loaded\nActiveState=inactive\nUnitFileState=disabled\n",
+              }
+            : result;
+        },
+      },
+    });
+    expect(disabled.out).toContain("systemd --user");
+    expect(disabled.out).not.toContain("launchd");
+    expect(
+      await readFile(
+        join(env.XDG_CONFIG_HOME, "agent-waker", "config.yaml"),
+        "utf8",
+      ),
+    ).toBe(savedConfig);
+    expect((await invoke(["uninstall", "--yes"], options)).code).toBe(EXIT.ok);
+    await expect(stat(timer)).rejects.toThrow();
+    await expect(
+      stat(join(env.XDG_DATA_HOME, "agent-waker", "bin", "agent-waker-runner")),
+    ).rejects.toThrow();
+  });
+
+  it.each(["linked custom root", "manager lexical alias"])(
+    "reports healthy Linux doctor and status after install and repair with a %s",
+    async (layout) => {
+      const root = join(home, "manager-config");
+      await mkdir(join(root, "systemd", "user"), { recursive: true });
+      const alias = join(home, "manager-alias");
+      await symlink(root, alias);
+      const options = {
+        platform: "linux",
+        runner: createSystemdUserManager(
+          join(
+            layout === "manager lexical alias" ? alias : root,
+            "systemd",
+            "user",
+          ),
+        ),
+        env: {
+          XDG_CONFIG_HOME:
+            layout === "manager lexical alias" ? root : join(home, "custom"),
+          XDG_RUNTIME_DIR: join(home, "runtime"),
+        },
+      };
+      for (const args of [
+        ["init", "--agents", "none"],
+        ["init", "--repair"],
+      ]) {
+        expect((await setUp(args, options)).code).toBe(EXIT.ok);
+        const diagnosed = await invoke(["doctor"], options);
+        expect.soft(diagnosed.code, args.join(" ")).toBe(EXIT.ok);
+        expect.soft(diagnosed.out).toContain("No problems found.");
+        expect
+          .soft((await invoke(["status"], options)).out)
+          .toMatch(/Scheduler.*running/);
+      }
+    },
+  );
+
+  it("installs, repairs and removes Linux units through a symlinked configuration root", async () => {
+    const realRoot = join(home, "real-config");
+    const aliasRoot = join(home, "config-alias");
+    const managerDirectory = join(realRoot, "systemd", "user");
+    await mkdir(managerDirectory, { recursive: true });
+    await symlink(realRoot, aliasRoot);
+    const options = {
+      platform: "linux",
+      runner: createSystemdUserManager(managerDirectory),
+      env: {
+        XDG_CONFIG_HOME: aliasRoot,
+        XDG_RUNTIME_DIR: join(home, "runtime"),
+      },
+    };
+    const installed = await setUp(["init", "--agents", "none"], options);
+    expect(installed.err).toBe("");
+    expect(installed.code).toBe(EXIT.ok);
+    expect((await setUp(["init", "--repair"], options)).code).toBe(EXIT.ok);
+    expect((await invoke(["doctor"], options)).out).toContain(
+      "scheduler is loaded",
+    );
+    expect((await invoke(["uninstall", "--yes"], options)).code).toBe(EXIT.ok);
+    for (const name of [
+      "agent-waker.service",
+      "agent-waker.timer",
+      "timers.target.wants/agent-waker.timer",
+    ])
+      await expect(lstat(join(managerDirectory, name))).rejects.toThrow();
+  });
+
+  it.each(["daily calendar", "changed service"])(
+    "diagnoses and repairs a Linux %s without blaming the launcher",
+    async (change) => {
+      const directory = join(home, ".config", "systemd", "user");
+      const options = {
+        platform: "linux",
+        runner: createSystemdUserManager(directory),
+        env: { XDG_RUNTIME_DIR: join(home, "runtime") },
+      };
+      expect((await setUp(["init", "--agents", "none"], options)).code).toBe(
+        EXIT.ok,
+      );
+      await writeFile(
+        join(
+          directory,
+          change === "daily calendar"
+            ? "agent-waker.timer"
+            : "agent-waker.service",
+        ),
+        change === "daily calendar"
+          ? "[Timer]\nOnCalendar=daily\n"
+          : "[Service]\nType=oneshot\nExecStart=/bin/true\n",
+      );
+      const diagnosed = await invoke(["doctor"], options);
+      expect(diagnosed.code).toBe(EXIT.partial);
+      expect(diagnosed.out).toContain(
+        "scheduler configuration differs or cannot be verified",
+      );
+      expect(diagnosed.out).toContain("agent-waker init --repair");
+      expect(diagnosed.out).not.toContain("launcher is missing");
+      expect((await invoke(["status"], options)).out).toContain(
+        "configuration needs attention",
+      );
+      expect((await setUp(["init", "--repair"], options)).code).toBe(EXIT.ok);
+      expect((await invoke(["doctor"], options)).out).not.toContain(
+        "configuration differs",
+      );
+      expect((await invoke(["status"], options)).out).toMatch(
+        /Scheduler.*running/,
+      );
+    },
+  );
+
+  it.each(["\u00a0", "\u2003"])(
+    "installs and repairs Linux units under native bare Unicode-space roots: %j",
+    async (space) => {
+      const root = join(home, `config${space}root`);
+      const directory = join(root, "systemd", "user");
+      const manager = createSystemdUserManager(directory);
+      const options = {
+        platform: "linux",
+        runner: {
+          async run(spec: Parameters<ProcessRunner["run"]>[0]) {
+            if (spec.args.includes("--property=UnitPath"))
+              return {
+                ...(await manager.run(spec)),
+                stdout: `${directory}.control ${directory} /etc/systemd/user\n`,
+              };
+            return manager.run(spec);
+          },
+        },
+        env: { XDG_CONFIG_HOME: root, XDG_RUNTIME_DIR: join(home, "runtime") },
+      };
+      expect((await setUp(["init", "--agents", "none"], options)).code).toBe(
+        EXIT.ok,
+      );
+      expect((await setUp(["init", "--repair"], options)).code).toBe(EXIT.ok);
+      expect((await invoke(["doctor"], options)).out).toContain(
+        "No problems found.",
+      );
+      expect((await invoke(["uninstall", "--yes"], options)).code).toBe(
+        EXIT.ok,
+      );
+    },
+  );
+
+  it("reports effective user overrides honestly and preserves them during repair", async () => {
+    const directory = join(home, ".config", "systemd", "user");
+    const manager = createSystemdUserManager(directory);
+    let override = false;
+    const options = {
+      platform: "linux",
+      runner: {
+        async run(spec: Parameters<ProcessRunner["run"]>[0]) {
+          const result = await manager.run(spec);
+          return override &&
+            spec.args.includes("agent-waker.timer") &&
+            spec.args.includes(
+              "--property=FragmentPath,DropInPaths,NeedDaemonReload",
+            )
+            ? {
+                ...result,
+                stdout: `FragmentPath=${await realpath(join(directory, "agent-waker.timer"))}\nDropInPaths=/etc/systemd/user/timer.d/override.conf\nNeedDaemonReload=no\n`,
+              }
+            : result;
+        },
+      },
+      env: { XDG_RUNTIME_DIR: join(home, "runtime") },
+    };
+    expect((await setUp(["init", "--agents", "none"], options)).code).toBe(
+      EXIT.ok,
+    );
+    override = true;
+    const diagnosed = await invoke(["doctor"], options);
+    expect(diagnosed.code).toBe(EXIT.partial);
+    expect(diagnosed.out).toContain("overriding systemd user drop-ins");
+    expect(diagnosed.out).toContain("scheduler is loaded");
+    expect((await setUp(["init", "--repair"], options)).code).toBe(EXIT.ok);
+    expect((await invoke(["doctor"], options)).code).toBe(EXIT.partial);
+    override = false;
+    expect((await setUp(["init", "--repair"], options)).code).toBe(EXIT.ok);
+    expect((await invoke(["doctor"], options)).out).toContain(
+      "No problems found.",
+    );
+  });
+
+  it.each([false, true])(
+    "uninstalls dangling Linux manager links after external definitions disappear and can reinitialize (v255: %j)",
+    async (v255) => {
+      const directory = join(home, ".config", "systemd", "user");
+      const root = join(home, "external-config");
+      const options = {
+        platform: "linux",
+        runner: createSystemdUserManager(directory, {
+          missingDisableFails: v255,
+          retainLoadedUnits: v255,
+        }),
+        env: { XDG_CONFIG_HOME: root, XDG_RUNTIME_DIR: join(home, "runtime") },
+      };
+      expect((await setUp(["init", "--agents", "none"], options)).code).toBe(
+        EXIT.ok,
+      );
+      for (const unit of ["agent-waker.timer", "agent-waker.service"])
+        await rm(join(root, "systemd", "user", unit));
+      expect((await invoke(["uninstall", "--yes"], options)).code).toBe(
+        EXIT.ok,
+      );
+      for (const name of [
+        "agent-waker.service",
+        "agent-waker.timer",
+        "timers.target.wants/agent-waker.timer",
+      ])
+        await expect(lstat(join(directory, name))).rejects.toThrow();
+      expect((await invoke(["uninstall", "--yes"], options)).code).toBe(
+        EXIT.ok,
+      );
+      expect((await setUp(["init", "--agents", "none"], options)).code).toBe(
+        EXIT.ok,
+      );
+      expect((await invoke(["doctor"], options)).out).toContain(
+        "No problems found.",
+      );
+    },
+  );
+
+  it("installs and repairs Linux units while an alternate session bus lacks systemd", async () => {
+    const options = {
+      platform: "linux",
+      runner: createSystemdUserManager(
+        join(home, ".config", "systemd", "user"),
+      ),
+      env: {
+        XDG_RUNTIME_DIR: join(home, "runtime"),
+        DBUS_SESSION_BUS_ADDRESS: "unix:path=/alternate/session/bus",
+      },
+    };
+    const installed = await setUp(["init", "--agents", "none"], options);
+    expect(installed.err).toBe("");
+    expect(installed.code).toBe(EXIT.ok);
+    expect((await setUp(["init", "--repair"], options)).code).toBe(EXIT.ok);
+    expect((await invoke(["doctor"], options)).out).toContain(
+      "scheduler is loaded",
+    );
+    expect((await invoke(["uninstall", "--yes"], options)).code).toBe(EXIT.ok);
+  });
+
+  it.each(["launcher parent", "agent-waker.service", "agent-waker.timer"])(
+    "keeps the previous Linux schedule when repair cannot prepare %s",
+    async (blocked) => {
+      const managerDirectory = join(home, ".config", "systemd", "user");
+      const runner = createSystemdUserManager(managerDirectory);
+      const original = {
+        platform: "linux",
+        runner,
+        env: { XDG_RUNTIME_DIR: join(home, "runtime") },
+      };
+      expect((await setUp(["init", "--agents", "none"], original)).code).toBe(
+        EXIT.ok,
+      );
+      const names = ["agent-waker.service", "agent-waker.timer"];
+      const contents = await Promise.all(
+        names.map((name) => readFile(join(managerDirectory, name), "utf8")),
+      );
+      const root = join(home, "replacement-config");
+      await mkdir(join(root, "agent-waker"), { recursive: true });
+      await copyFile(
+        join(home, ".config", "agent-waker", "config.yaml"),
+        join(root, "agent-waker", "config.yaml"),
+      );
+      const dataRoot = join(home, "replacement-data");
+      if (blocked === "launcher parent") {
+        await mkdir(join(dataRoot, "agent-waker"), { recursive: true });
+        await writeFile(join(dataRoot, "agent-waker", "bin"), "regular file");
+      } else
+        await mkdir(join(root, "systemd", "user", blocked), {
+          recursive: true,
+        });
+      const repaired = await setUp(["init", "--repair"], {
+        ...original,
+        env: {
+          ...original.env,
+          XDG_CONFIG_HOME: root,
+          XDG_DATA_HOME: dataRoot,
+        },
+      });
+      expect(repaired.code).toBe(EXIT.failed);
+      expect(repaired.err).toMatch(/EEXIST|EISDIR/);
+      expect(
+        await Promise.all(
+          names.map((name) => readFile(join(managerDirectory, name), "utf8")),
+        ),
+      ).toEqual(contents);
+      expect((await invoke(["doctor"], original)).out).toContain(
+        "scheduler is loaded",
+      );
+      expect((await invoke(["uninstall", "--yes"], original)).code).toBe(
+        EXIT.ok,
+      );
+    },
+  );
+
+  it.each([
+    { manager: "default", from: "default", to: "custom-a" },
+    { manager: "default", from: "custom-a", to: "default" },
+    { manager: "default", from: "custom-a", to: "custom-b" },
+    { manager: "default", from: "custom-b", to: "custom-a" },
+    { manager: "custom-a", from: "custom-a", to: "custom-b" },
+    { manager: "custom-a", from: "custom-a", to: "default" },
+  ])(
+    "repairs Linux units from $from to $to with a $manager manager root and removes their links",
+    async ({ manager, from, to }) => {
+      const roots: Record<string, string> = {
+        default: join(home, ".config"),
+        "custom-a": join(home, "config A \"with quotes' and $ spaces"),
+        "custom-b": join(home, "config B"),
+      };
+      const managerRoot = roots[manager] ?? "";
+      const originalRoot = roots[from] ?? "";
+      const currentRoot = roots[to] ?? "";
+      const managerDirectory = join(managerRoot, "systemd", "user");
+      const originalDirectory = join(originalRoot, "systemd", "user");
+      const currentDirectory = join(currentRoot, "systemd", "user");
+      const runner = createSystemdUserManager(managerDirectory);
+      const options = (root: string) => ({
+        platform: "linux",
+        runner,
+        env: {
+          XDG_CONFIG_HOME: root,
+          XDG_DATA_HOME: join(home, "data"),
+          XDG_STATE_HOME: join(home, "state"),
+          XDG_CACHE_HOME: join(home, "cache"),
+          XDG_RUNTIME_DIR: join(home, "runtime"),
+          DBUS_SESSION_BUS_ADDRESS: "unix:path=/test/runtime/bus",
+        },
+      });
+      expect(
+        (await setUp(["init", "--agents", "none"], options(originalRoot))).code,
+      ).toBe(EXIT.ok);
+      const names = ["agent-waker.timer", "agent-waker.service"];
+      const oldContents = await Promise.all(
+        names.map(async (name) => {
+          const path = join(originalDirectory, name);
+          const contents = `${await readFile(path, "utf8")}# original installation\n`;
+          await writeFile(path, contents);
+          return contents;
+        }),
+      );
+      const savedConfig = await readFile(
+        join(originalRoot, "agent-waker", "config.yaml"),
+        "utf8",
+      );
+      await mkdir(join(currentRoot, "agent-waker"), { recursive: true });
+      await writeFile(
+        join(currentRoot, "agent-waker", "config.yaml"),
+        savedConfig,
+      );
+      const repaired = await setUp(["init", "--repair"], options(currentRoot));
+      expect(repaired.err).toBe("");
+      expect(repaired.code).toBe(EXIT.ok);
+      expect((await invoke(["doctor"], options(currentRoot))).out).toContain(
+        "scheduler is loaded",
+      );
+      for (const name of names) {
+        expect((await lstat(join(currentDirectory, name))).isFile()).toBe(true);
+        expect(await realpath(join(managerDirectory, name))).toBe(
+          await realpath(join(currentDirectory, name)),
+        );
+      }
+      expect(
+        await realpath(
+          join(managerDirectory, "timers.target.wants", "agent-waker.timer"),
+        ),
+      ).toBe(await realpath(join(currentDirectory, "agent-waker.timer")));
+      expect(
+        (await setUp(["init", "--repair"], options(currentRoot))).code,
+      ).toBe(EXIT.ok);
+      expect(
+        await readFile(join(currentRoot, "agent-waker", "config.yaml"), "utf8"),
+      ).toBe(savedConfig);
+      expect(
+        (await invoke(["uninstall", "--yes"], options(currentRoot))).code,
+      ).toBe(EXIT.ok);
+      for (const name of names) {
+        await expect(lstat(join(managerDirectory, name))).rejects.toThrow();
+        await expect(lstat(join(currentDirectory, name))).rejects.toThrow();
+      }
+      await expect(
+        lstat(
+          join(managerDirectory, "timers.target.wants", "agent-waker.timer"),
+        ),
+      ).rejects.toThrow();
+      if (originalRoot !== managerRoot) {
+        expect(
+          await Promise.all(
+            names.map((name) =>
+              readFile(join(originalDirectory, name), "utf8"),
+            ),
+          ),
+        ).toEqual(oldContents);
+      }
+    },
+  );
 
   it.each([
     { now: at("06:00"), next: "today 06:45" },

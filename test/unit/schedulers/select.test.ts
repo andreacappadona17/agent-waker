@@ -21,6 +21,7 @@ import {
   createScheduler,
   UnsupportedSchedulerError,
 } from "#src/schedulers/select.js";
+import { createSystemdUserManager } from "../../support/systemd-user-manager.js";
 
 const ok = (): ProcessResult => ({
   stdout: "",
@@ -38,7 +39,7 @@ const runner: ProcessRunner = { run: () => Promise.resolve(ok()) };
 const config: SchedulerInstallConfig = {
   nodePath: "/opt/node/bin/node",
   entrypoint: "/opt/agent-waker/dist/cli.js",
-  intervalSeconds: 60,
+  intervalSeconds: 300,
   logDirectory: "/var/log/agent-waker",
 };
 
@@ -61,34 +62,41 @@ const exists = (path: string): Promise<boolean> =>
   );
 
 describe("createScheduler", () => {
-  it("gives macOS a driver that installs, composes the launcher path, and uninstalls", async () => {
-    const driver = createScheduler({
-      platform: "darwin",
-      runner,
-      home,
-      uid: 501,
-      launcherDir,
-    });
-    const launcher = join(launcherDir, LAUNCHER_NAME);
+  it.each(["darwin", "linux"])(
+    "gives %s a driver that installs, inspects, and uninstalls",
+    async (platform) => {
+      const driver = createScheduler({
+        platform,
+        runner:
+          platform === "linux"
+            ? createSystemdUserManager(join(home, ".config", "systemd", "user"))
+            : { run: (spec) => Promise.resolve(okWithState(spec.args)) },
+        home,
+        uid: 501,
+        launcherDir,
+        env: { XDG_RUNTIME_DIR: join(home, "runtime") },
+      });
+      const launcher = join(launcherDir, LAUNCHER_NAME);
 
-    await driver.install(config);
-    expect(await exists(launcher)).toBe(true);
+      await driver.install(config);
+      expect(await exists(launcher)).toBe(true);
 
-    const installed = await driver.inspect();
-    expect(installed.installed).toBe(true);
-    // The launcher path is composed by the gate from launcherDir; the rest of
-    // the status shape is the launchd driver's own, covered next door.
-    expect(installed.launcherPath).toBe(launcher);
+      const installed = await driver.inspect();
+      expect(installed.installed).toBe(true);
+      // The launcher path is composed by the gate from launcherDir; the rest of
+      // the status shape is the launchd driver's own, covered next door.
+      expect(installed.launcherPath).toBe(launcher);
 
-    await driver.uninstall();
-    expect(await exists(launcher)).toBe(false);
-    expect((await driver.inspect()).installed).toBe(false);
-  });
+      await driver.uninstall();
+      expect(await exists(launcher)).toBe(false);
+      expect((await driver.inspect()).installed).toBe(false);
+    },
+  );
 
   it("refuses a platform no build supports", () => {
     const build = (): unknown =>
       createScheduler({
-        platform: "linux",
+        platform: "win32",
         runner,
         home,
         uid: 1000,
@@ -96,6 +104,17 @@ describe("createScheduler", () => {
       });
 
     expect(build).toThrow(UnsupportedSchedulerError);
-    expect(build).toThrow("linux");
+    expect(build).toThrow("win32");
   });
 });
+
+function okWithState(args: readonly string[]): ProcessResult {
+  return {
+    ...ok(),
+    stdout: args.includes("is-system-running")
+      ? "running\n"
+      : args.includes("show")
+        ? "LoadState=loaded\nActiveState=active\nUnitFileState=enabled\n"
+        : "",
+  };
+}

@@ -75,6 +75,7 @@ export interface StatusView extends PhaseContext {
     readonly installed: boolean;
     readonly loaded: boolean;
     readonly stalePath: boolean;
+    readonly definitionDrift?: boolean;
   };
   readonly agents: readonly StatusAgentView[];
   readonly resetConfidence?: ResetConfidence | undefined;
@@ -235,6 +236,10 @@ function schedulerLine(view: StatusView, options: RenderOptions): string {
 
   if (stalePath) {
     return `Scheduler   ${iconFor("unhealthy", options)} stale — it points at a file that has moved; run \`agent-waker doctor\``;
+  }
+
+  if (view.scheduler.definitionDrift === true) {
+    return `Scheduler   ${iconFor("unhealthy", options)} configuration needs attention — run \`agent-waker doctor\``;
   }
 
   if (!loaded) {

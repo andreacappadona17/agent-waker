@@ -2,7 +2,7 @@
  * What a scheduler driver has to implement.
  *
  * The platform specifics of waking agent waker — a launchd LaunchAgent on
- * macOS, a systemd --user timer when Linux lands — sit behind this seam so a
+ * macOS, a systemd --user timer on Linux — sit behind this seam so a
  * new platform slots in without the core or the CLI learning its name. A
  * driver installs the schedule, describes what it finds, and removes it;
  * nothing above this line knows how.
@@ -41,6 +41,8 @@ export interface SchedulerStatus {
   readonly nodeManagedByNvm?: boolean;
   readonly entrypointManagedByNvm?: boolean;
   readonly intervalSeconds?: number;
+  /** Native unit definitions differ from the installed schedule or cannot be verified. */
+  readonly definitionDrift?: boolean;
 }
 
 /** Install the schedule, describe it, or remove it — however the platform does. */

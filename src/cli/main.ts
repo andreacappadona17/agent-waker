@@ -58,9 +58,8 @@ Exit codes:
 
 /** Why there is nothing to do here. */
 const unsupportedPlatform = (platform: string): string =>
-  `agent waker runs on macOS, and this is ${platform}.
-Scheduling needs a launchd agent, which only macOS has. Linux support is
-planned and not in this build.
+  `agent waker runs on macOS and Linux, and this is ${platform}.
+Scheduling needs a native user scheduler: launchd on macOS or systemd --user on Linux.
 `;
 
 /** Commands whose positional arguments name agents. */
@@ -206,7 +205,7 @@ export async function run(environment: CliEnvironment): Promise<ExitCode> {
 
   // Before anything reads a file. `help` and `--version` are answered above,
   // because a user asking what this is deserves an answer wherever they are.
-  if (environment.platform !== "darwin") {
+  if (!["darwin", "linux"].includes(environment.platform)) {
     const { platformName } = await import("#src/cli/format.js");
     environment.writeError(
       unsupportedPlatform(platformName(environment.platform)),
