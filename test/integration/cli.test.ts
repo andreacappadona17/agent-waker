@@ -98,7 +98,7 @@ interface Invocation {
 const invoke = async (
   argv: string[],
   options: {
-    scripts?: Partial<Record<"claude" | "codex", FakeScript>>;
+    scripts?: Partial<Record<"claude" | "codex" | "gemini", FakeScript>>;
     now?: number;
     env?: Record<string, string | undefined>;
     isTty?: boolean;
@@ -147,6 +147,7 @@ const invoke = async (
     registry: createRegistry([
       createFakeAdapter("claude", options.scripts?.claude ?? {}),
       createFakeAdapter("codex", options.scripts?.codex ?? {}),
+      createFakeAdapter("gemini", options.scripts?.gemini ?? {}),
     ]),
     runner: options.runner ?? quietRunner,
   };
@@ -196,10 +197,10 @@ describe("bad usage", () => {
   });
 
   it("refuses an agent it does not have", async () => {
-    const { code, err } = await invoke(["run", "gemini"]);
+    const { code, err } = await invoke(["run", "unsupported-agent"]);
 
     expect(code).toBe(EXIT.usage);
-    expect(err).toContain("gemini");
+    expect(err).toContain("unsupported-agent");
   });
 
   it("says how to start when there is no configuration", async () => {
@@ -1078,11 +1079,11 @@ describe("logs", () => {
   it("refuses an agent it does not have", async () => {
     await writeConfig();
 
-    const { code, err } = await invoke(["logs", "gemini"]);
+    const { code, err } = await invoke(["logs", "unsupported-agent"]);
 
     // Silently showing everything would be the worst of both.
     expect(code).toBe(EXIT.usage);
-    expect(err).toContain("gemini");
+    expect(err).toContain("unsupported-agent");
   });
 
   it("says so when an agent has no events of its own", async () => {
@@ -2666,9 +2667,9 @@ describe("init", () => {
   it.each([
     ["init", "--time", "breakfast"],
     ["init", "--timezone", "Europe/Roma"],
-    ["init", "--agents", "gemini"],
+    ["init", "--agents", "unsupported-agent"],
     ["init", "--agent-times", "codex=25:00"],
-    ["init", "--agent-times", "gemini=07:00"],
+    ["init", "--agent-times", "unsupported-agent=07:00"],
     ["init", "--agent-times", "codex=07:00,codex=08:00"],
     ["init", "--agent-times", "codex"],
     ["init", "--repair", "--agent-times", "codex=07:00"],
@@ -3160,12 +3161,12 @@ describe("init", () => {
   it("asks again rather than starting over after a typo", async () => {
     const { code, err } = await setUp(["init", "--time", "07:00"], {
       now: at("06:00"),
-      answers: ["gemini", "codex", "Europe/Rome"],
+      answers: ["unsupported-agent", "codex", "Europe/Rome"],
     });
 
     // This is the first prompt of the onboarding; a typo should not send the
     // user back to the beginning of it.
-    expect(err).toContain("gemini");
+    expect(err).toContain("unsupported-agent");
     expect(code).toBe(EXIT.ok);
     expect(await configFile()).toMatch(/codex:\n {4}enabled: true/);
   });
@@ -3173,7 +3174,12 @@ describe("init", () => {
   it("gives up rather than spinning on an answer that never parses", async () => {
     const { code } = await setUp(["init"], {
       now: at("06:00"),
-      answers: ["gemini", "gemini", "gemini", "gemini"],
+      answers: [
+        "unsupported-agent",
+        "unsupported-agent",
+        "unsupported-agent",
+        "unsupported-agent",
+      ],
     });
 
     expect(code).toBe(EXIT.failed);
@@ -3387,7 +3393,7 @@ describe("uninstall", () => {
     await writeConfig();
 
     expect((await invoke(["uninstall"], { runner: removes })).out).toContain(
-      "Claude Code and Codex are left alone",
+      "Claude Code, Codex and Gemini CLI are left alone",
     );
   });
 

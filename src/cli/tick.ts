@@ -49,6 +49,7 @@ export async function runTick(
         telemetry: context.telemetry,
         runner: context.runner,
         workDir: context.paths.workDir,
+        providerHome: context.paths.providerHome,
         runtime: "local",
         now: environment.now,
         // The tick's own instant is frozen; measuring how long a provider took

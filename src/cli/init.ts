@@ -119,6 +119,8 @@ agents:
     enabled: true
   codex:
     enabled: true
+  gemini:
+    enabled: false
 `;
 
 const WELCOME = `agent waker

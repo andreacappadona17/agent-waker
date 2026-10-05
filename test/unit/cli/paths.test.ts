@@ -7,6 +7,7 @@ const home = "/home/dev";
 describe("resolvePaths", () => {
   it("follows the XDG layout by default", () => {
     expect(resolvePaths({}, home)).toEqual({
+      providerHome: "/home/dev/.agent-waker-gemini",
       config: "/home/dev/.config/agent-waker/config.yaml",
       configDir: "/home/dev/.config/agent-waker",
       stateDir: "/home/dev/.local/state/agent-waker",
@@ -63,4 +64,25 @@ describe("resolvePaths", () => {
 
     expect(paths.workDir.startsWith(paths.stateDir)).toBe(false);
   });
+});
+
+it("refuses a provider profile inside a recursive uninstall root", async () => {
+  const { openContext } = await import("#src/cli/context.js");
+  const environment = {
+    argv: [],
+    env: { XDG_CACHE_HOME: "/tmp/profile-overlap" },
+    home: "/tmp/profile-overlap/agent-waker/work/user",
+    platform: "darwin",
+    uid: 501,
+    isTty: false,
+    now: () => 0,
+    write: () => undefined,
+    writeError: () => undefined,
+    execPath: "/node",
+    entrypoint: "/app",
+    systemTimezone: "UTC",
+  };
+  await expect(
+    openContext(environment, { allowMissingConfig: true, readOnly: true }),
+  ).rejects.toThrow("provider profile overlaps");
 });

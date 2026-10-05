@@ -471,9 +471,10 @@ function readAgents(src: Source): Record<AgentId, AgentConfig> {
   const agents = {} as Record<AgentId, AgentConfig>;
 
   for (const agentId of AGENT_IDS) {
-    // Absent means enabled: a user who never opens the file gets both agents.
+    // Gemini requires a dedicated native login and is enabled explicitly.
     const enabled =
-      optional(src, ["agents", agentId, "enabled"], parseBoolean) ?? true;
+      optional(src, ["agents", agentId, "enabled"], parseBoolean) ??
+      agentId !== "gemini";
     const schedule = readSchedule(src, ["agents", agentId, "schedule"]);
     agents[agentId] =
       schedule === undefined ? { enabled } : { enabled, schedule };

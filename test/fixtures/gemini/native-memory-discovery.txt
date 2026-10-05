@@ -1,0 +1,277 @@
+/**
+ * Copyright 2025 Google LLC
+ * SPDX-License-Identifier: Apache-2.0
+ * Exact selected functions from v0.62.0 packages/core/src/utils/memoryDiscovery.ts.
+ */
+export async function deduplicatePathsByFileIdentity(
+  filePaths: string[],
+): Promise<{
+  paths: string[];
+  identityMap: Map<string, string>;
+}> {
+  if (filePaths.length === 0) {
+    return {
+      paths: [],
+      identityMap: new Map<string, string>(),
+    };
+  }
+
+  // first deduplicate by string path to avoid redundant stat calls
+  const uniqueFilePaths = Array.from(new Set(filePaths));
+
+  const fileIdentityMap = new Map<string, string>();
+  const deduplicatedPaths: string[] = [];
+
+  const CONCURRENT_LIMIT = 20;
+  const results: Array<{
+    path: string;
+    dev: bigint | number | null;
+    ino: bigint | number | null;
+  }> = [];
+
+  for (let i = 0; i < uniqueFilePaths.length; i += CONCURRENT_LIMIT) {
+    const batch = uniqueFilePaths.slice(i, i + CONCURRENT_LIMIT);
+    const batchPromises = batch.map(async (filePath) => {
+      try {
+        // use stat() instead of lstat() to follow symlinks and get target file identity
+        const stats = await fs.stat(filePath);
+        return {
+          path: filePath,
+          dev: stats.dev,
+          ino: stats.ino,
+        };
+      } catch (error: unknown) {
+        const message = error instanceof Error ? error.message : String(error);
+        logger.debug(
+          `could not stat file for deduplication: ${filePath}. error: ${message}`,
+        );
+        return {
+          path: filePath,
+          dev: null,
+          ino: null,
+        };
+      }
+    });
+
+    const batchResults = await Promise.allSettled(batchPromises);
+    for (const result of batchResults) {
+      if (result.status === 'fulfilled') {
+        results.push(result.value);
+      } else {
+        const message = getErrorMessage(result.reason);
+        debugLogger.debug(
+          '[DEBUG] [MemoryDiscovery] unexpected error during deduplication stat:',
+          message,
+        );
+      }
+    }
+  }
+
+  const pathToIdentityMap = new Map<string, string>();
+  for (const { path, dev, ino } of results) {
+    if (dev !== null && ino !== null) {
+      const identityKey = `${dev.toString()}:${ino.toString()}`;
+      pathToIdentityMap.set(path, identityKey);
+      if (!fileIdentityMap.has(identityKey)) {
+        fileIdentityMap.set(identityKey, path);
+        deduplicatedPaths.push(path);
+        debugLogger.debug(
+          '[DEBUG] [MemoryDiscovery] deduplication: keeping',
+          path,
+          `(dev: ${dev}, ino: ${ino})`,
+        );
+      } else {
+        const existingPath = fileIdentityMap.get(identityKey);
+        debugLogger.debug(
+          '[DEBUG] [MemoryDiscovery] deduplication: skipping',
+          path,
+          `(same file as ${existingPath})`,
+        );
+      }
+    } else {
+      deduplicatedPaths.push(path);
+    }
+  }
+
+  return {
+    paths: deduplicatedPaths,
+    identityMap: pathToIdentityMap,
+  };
+}
+
+async function findProjectRoot(
+  startDir: string,
+  boundaryMarkers: readonly string[] = ['.git'],
+): Promise<string | null> {
+  if (boundaryMarkers.length === 0) {
+    return null;
+  }
+
+  let currentDir = toAbsolutePath(startDir);
+  while (true) {
+    for (const marker of boundaryMarkers) {
+      // Sanitize: skip markers with path traversal or absolute paths
+      if (path.isAbsolute(marker) || marker.includes('..')) {
+        continue;
+      }
+      const markerPath = path.join(currentDir, marker);
+      try {
+        // Check for existence only — marker can be a directory (normal repos)
+        // or a file (submodules / worktrees).
+        await fs.access(markerPath);
+        return currentDir;
+      } catch (error: unknown) {
+        // Don't log ENOENT errors as they're expected when marker doesn't exist
+        // Also don't log errors in test environments, which often have mocked fs
+        const isENOENT =
+          typeof error === 'object' &&
+          error !== null &&
+          'code' in error &&
+          // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion
+          (error as { code: string }).code === 'ENOENT';
+
+        // Only log unexpected errors in non-test environments
+        // process.env['NODE_ENV'] === 'test' or VITEST are common test indicators
+        const isTestEnv =
+          process.env['NODE_ENV'] === 'test' || process.env['VITEST'];
+
+        if (!isENOENT && !isTestEnv) {
+          if (typeof error === 'object' && error !== null && 'code' in error) {
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion
+            const fsError = error as { code: string; message: string };
+            logger.warn(
+              `Error checking for ${marker} at ${markerPath}: ${fsError.message}`,
+            );
+          } else {
+            logger.warn(
+              `Non-standard error checking for ${marker} at ${markerPath}: ${String(error)}`,
+            );
+          }
+        }
+      }
+    }
+    const parentDir = path.dirname(currentDir);
+    if (parentDir === currentDir) {
+      return null;
+    }
+    currentDir = parentDir;
+  }
+}
+
+export async function getUserProjectMemoryPaths(
+  projectMemoryDir: string,
+): Promise<string[]> {
+  const preferredMemoryPath = toAbsolutePath(
+    path.join(projectMemoryDir, PROJECT_MEMORY_INDEX_FILENAME),
+  );
+
+  try {
+    await fs.access(preferredMemoryPath, fsSync.constants.R_OK);
+    debugLogger.debug(
+      '[DEBUG] [MemoryDiscovery] Found user project memory index:',
+      preferredMemoryPath,
+    );
+    return [preferredMemoryPath];
+  } catch {
+    // Fall back to the legacy private GEMINI.md file if the project has not
+    // been migrated to MEMORY.md yet.
+  }
+
+  const geminiMdFilenames = getAllGeminiMdFilenames();
+  const accessChecks = geminiMdFilenames.map(async (filename) => {
+    const legacyMemoryPath = toAbsolutePath(
+      path.join(projectMemoryDir, filename),
+    );
+    try {
+      await fs.access(legacyMemoryPath, fsSync.constants.R_OK);
+      debugLogger.debug(
+        '[DEBUG] [MemoryDiscovery] Found legacy user project memory file:',
+        legacyMemoryPath,
+      );
+      return legacyMemoryPath;
+    } catch {
+      return null;
+    }
+  });
+
+  return (await Promise.all(accessChecks)).filter(
+    (p): p is string => p !== null,
+  );
+}
+
+export async function getEnvironmentMemoryPaths(
+  trustedRoots: string[],
+  boundaryMarkers: readonly string[] = ['.git'],
+): Promise<string[]> {
+  // Trusted Roots Upward Traversal (Parallelized)
+  const traversalPromises = trustedRoots.map(async (root) => {
+    const resolvedRoot = toAbsolutePath(root);
+    const gitRoot = await findProjectRoot(resolvedRoot, boundaryMarkers);
+    const ceiling = gitRoot ?? resolvedRoot;
+    debugLogger.debug(
+      '[DEBUG] [MemoryDiscovery] Loading environment memory for trusted root:',
+      resolvedRoot,
+      '(Stopping at',
+      gitRoot
+        ? `git root: ${ceiling})`
+        : `trusted root: ${ceiling} — no git root found)`,
+    );
+    return findUpwardGeminiFiles(resolvedRoot, ceiling);
+  });
+
+  const pathArrays = await Promise.all(traversalPromises);
+
+  const { paths: unique } = await deduplicatePathsByFileIdentity(
+    pathArrays.flat(),
+  );
+  return unique.sort();
+}
+
+async function findUpwardGeminiFiles(
+  startDir: string,
+  stopDir: string,
+): Promise<string[]> {
+  const upwardPaths: string[] = [];
+  let currentDir = toAbsolutePath(startDir);
+  const resolvedStopDirKey = normalizePath(stopDir);
+  const geminiMdFilenames = getAllGeminiMdFilenames();
+  const globalGeminiDirKey = normalizePath(path.join(homedir(), GEMINI_DIR));
+
+  debugLogger.debug(
+    '[DEBUG] [MemoryDiscovery] Starting upward search from',
+    currentDir,
+    'stopping at',
+    stopDir,
+  );
+
+  while (true) {
+    if (normalizePath(currentDir) === globalGeminiDirKey) {
+      break;
+    }
+
+    // Parallelize checks for all filename variants in the current directory
+    const accessChecks = geminiMdFilenames.map(async (filename) => {
+      const potentialPath = toAbsolutePath(path.join(currentDir, filename));
+      try {
+        await fs.access(potentialPath, fsSync.constants.R_OK);
+        return potentialPath;
+      } catch {
+        return null;
+      }
+    });
+
+    const foundPathsInDir = (await Promise.all(accessChecks)).filter(
+      (p): p is string => p !== null,
+    );
+
+    upwardPaths.unshift(...foundPathsInDir);
+
+    const parentDir = path.dirname(currentDir);
+    const currentKey = normalizePath(currentDir);
+    if (currentKey === resolvedStopDirKey || currentDir === parentDir) {
+      break;
+    }
+    currentDir = parentDir;
+  }
+  return upwardPaths;
+}

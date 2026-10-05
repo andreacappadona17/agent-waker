@@ -15,6 +15,7 @@ export async function readResetConfidence(
   const counts: ResetConfidence = {
     claude: { stated: 0, guessed: 0 },
     codex: { stated: 0, guessed: 0 },
+    gemini: { stated: 0, guessed: 0 },
   };
 
   try {

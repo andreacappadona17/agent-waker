@@ -38,9 +38,10 @@ interface BlockCase {
 }
 
 export interface AdapterConformanceFixture {
-  readonly authArgs: readonly string[];
+  readonly version?: string;
+  readonly authArgs: readonly (string | RegExp)[];
   readonly helpArgs: readonly string[];
-  readonly activationArgs: readonly string[];
+  readonly activationArgs: readonly (string | RegExp)[];
   readonly help: string;
   readonly auth: Readonly<
     Record<
@@ -74,8 +75,17 @@ export function adapterConformance(
     let authResponse: ProcessResult;
     let helpResponse: ProcessResult;
     let activationResponse: ProcessResult;
+    const matchArgs = (args: readonly (string | RegExp)[]): unknown[] =>
+      args.map((argument): unknown =>
+        argument instanceof RegExp ? expect.stringMatching(argument) : argument,
+      );
     const executable = `/fake/bin/${adapter.id}`;
-    const installed = { installed: true, executable, health: "ok" } as const;
+    const installed = {
+      installed: true,
+      executable,
+      health: "ok",
+      version: fixture.version ?? "1.2.3",
+    } as const;
     const subscribed = {
       authenticated: true,
       mode: "subscription_local",
@@ -84,7 +94,7 @@ export function adapterConformance(
     const found: discovery.ExecutableDiscovery = {
       installed: true,
       health: "healthy",
-      version: "1.2.3",
+      version: fixture.version ?? "1.2.3",
       candidates: [],
       selected: {
         path: executable,
@@ -95,7 +105,11 @@ export function adapterConformance(
 
     beforeEach(async () => {
       directory = await mkdtemp(join(tmpdir(), "adapter-conformance-"));
-      const workDir = join(directory, "work", adapter.id);
+      const providerHome = join(directory, "profile");
+      const workDir =
+        adapter.id === "gemini"
+          ? join(providerHome, "work")
+          : join(directory, "work", adapter.id);
       await mkdir(workDir, { recursive: true });
       calls = [];
       authResponse = fixture.auth.subscription.response;
@@ -105,6 +119,7 @@ export function adapterConformance(
       context = {
         now: Date.parse("2026-09-07T07:00:00Z"),
         workDir,
+        providerHome,
         runner: {
           async run(spec) {
             calls.push(spec);
@@ -113,9 +128,12 @@ export function adapterConformance(
             expect(await readdir(workDir)).toEqual([]);
             expect(spec.stdin ?? "closed").toBe("closed");
             const key = JSON.stringify(spec.args);
-            if (key === JSON.stringify(fixture.authArgs)) return authResponse;
+            if (spec.timeoutMs === 30_000) {
+              expect(spec.args).toEqual(matchArgs(fixture.authArgs));
+              return authResponse;
+            }
             if (key === JSON.stringify(fixture.helpArgs)) return helpResponse;
-            expect(spec.args).toEqual(fixture.activationArgs);
+            expect(spec.args).toEqual(matchArgs(fixture.activationArgs));
             return activationResponse;
           },
         },
@@ -131,13 +149,14 @@ export function adapterConformance(
       const result = await tick(
         {
           config: parseConfig(
-            "version: 1\ntimezone: UTC\n",
+            `version: 1\ntimezone: UTC\nagents:\n  ${adapter.id}:\n    enabled: true\n`,
             "conformance.yaml",
           ),
           store: createStateStore(join(directory, "state")),
           registry: createRegistry([adapter]),
           runner: context.runner,
           workDir: join(directory, "work"),
+          providerHome: join(directory, "profile"),
           log: { write: () => Promise.resolve() },
           telemetry: NO_TELEMETRY,
           runtime: "local",
@@ -152,7 +171,7 @@ export function adapterConformance(
     it("detects an installed provider", async () => {
       expect(await adapter.detect(context)).toMatchObject({
         ...installed,
-        version: "1.2.3",
+        version: fixture.version ?? "1.2.3",
       });
       expect(discovery.discoverExecutable).toHaveBeenCalledWith(
         adapter.id,
@@ -190,12 +209,14 @@ export function adapterConformance(
         expect(await adapter.inspectAuth(context, installed)).toMatchObject(
           fixture.auth[name].expected,
         );
-        expect(calls.map((spec) => spec.args)).toEqual([fixture.authArgs]);
+        expect(calls.map((spec) => spec.args)).toEqual([
+          matchArgs(fixture.authArgs),
+        ]);
         if (name !== "subscription") {
           expect(await runTick()).toMatchObject({ phase: "auth_required" });
           expect(calls.map((spec) => spec.args)).toEqual([
-            fixture.authArgs,
-            fixture.authArgs,
+            matchArgs(fixture.authArgs),
+            matchArgs(fixture.authArgs),
           ]);
         }
       },
@@ -205,7 +226,9 @@ export function adapterConformance(
       expect(await adapter.activate(context, installed, subscribed)).toEqual({
         kind: "activated",
       });
-      expect(calls.map((spec) => spec.args)).toEqual([fixture.activationArgs]);
+      expect(calls.map((spec) => spec.args)).toEqual([
+        matchArgs(fixture.activationArgs),
+      ]);
     });
 
     it.each(["ENOENT", "ENOEXEC", "EACCES"])(
@@ -281,8 +304,9 @@ export function adapterConformance(
       expect(calls.map((spec) => spec.args)).toEqual([fixture.helpArgs]);
     });
 
-    const flags = fixture.activationArgs.filter((argument) =>
-      argument.startsWith("-"),
+    const flags = fixture.activationArgs.filter(
+      (argument): argument is string =>
+        typeof argument === "string" && argument.startsWith("-"),
     );
     it.each(flags)("detects renamed %s before any activation", async (flag) => {
       helpResponse = completed({

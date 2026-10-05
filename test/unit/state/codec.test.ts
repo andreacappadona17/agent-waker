@@ -13,6 +13,7 @@ const populated: AgentWakerState = {
   version: 1,
   updatedAt: utc("2026-09-06T05:30:01.000Z"),
   agents: {
+    gemini: { phase: "idle" },
     claude: {
       phase: "activated",
       cycleDate: "2026-09-06",
@@ -42,6 +43,7 @@ describe("encodeState", () => {
       version: 1,
       updatedAt: "2026-09-06T05:30:01.000Z",
       agents: {
+        gemini: { phase: "idle" },
         claude: {
           phase: "activated",
           cycleDate: "2026-09-06",
@@ -98,6 +100,7 @@ describe("decodeState", () => {
     expect(decoded.agents).toEqual({
       claude: { phase: "idle" },
       codex: { phase: "idle" },
+      gemini: { phase: "idle" },
     });
   });
 
@@ -107,10 +110,10 @@ describe("decodeState", () => {
     const decoded = decodeState({
       version: 1,
       updatedAt: "2026-09-06T05:30:01.000Z",
-      agents: { gemini: { phase: "activated" } },
+      agents: { "unsupported-agent": { phase: "activated" } },
     });
 
-    expect(decoded.agents).not.toHaveProperty("gemini");
+    expect(decoded.agents).not.toHaveProperty("unsupported-agent");
   });
 
   it.each<[unknown, string]>([
@@ -183,6 +186,7 @@ it("rejects malformed and competing v2 Cycle state rather than forgetting succes
     agents: {
       claude: { "07:00": { phase: "activated", cycleDate: "2026-09-07" } },
       codex: {},
+      gemini: {},
     },
   };
   expect(decodeState(base)).toEqual({
@@ -191,6 +195,7 @@ it("rejects malformed and competing v2 Cycle state rather than forgetting succes
     agents: {
       claude: { "07:00": { phase: "activated", cycleDate: "2026-09-07" } },
       codex: {},
+      gemini: {},
     },
   });
   for (const entry of [

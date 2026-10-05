@@ -87,13 +87,17 @@ these observations. Missing evidence is shown explicitly.
 
 ## Supported agents
 
-| Agent       | Local activation | Reset detection | GitHub Actions  |
-| ----------- | ---------------- | --------------- | --------------- |
-| Claude Code | yes              | best effort     | planned         |
-| Codex       | yes              | best effort     | not supported\* |
+| Agent             | Local activation | Reset detection      | GitHub Actions  |
+| ----------------- | ---------------- | -------------------- | --------------- |
+| Claude Code       | yes              | best effort          | planned         |
+| Codex             | yes              | best effort          | not supported\* |
+| Gemini CLI 0.62.0 | opt-in OAuth     | quota, reset unknown | not supported   |
 
 \* Codex's official GitHub Action is API-key oriented. agent waker will not
 silently substitute API-key billing for subscription usage.
+
+Gemini uses a dedicated native login profile and remains disabled on upgrades
+until enabled. See [Gemini setup and limitations](docs/gemini-cli/gemini-development.md).
 
 ## Commands
 
@@ -102,7 +106,7 @@ silently substitute API-key billing for subscription usage.
 | `agent-waker init`                | Interactive setup and scheduler install     |
 | `agent-waker status`              | What each agent is doing and what is next   |
 | `agent-waker run [agent...]`      | Evaluate agents now, rather than waiting    |
-| `agent-waker detect`              | Discover installed agents, change nothing   |
+| `agent-waker detect`              | Inspect installed agents and native login   |
 | `agent-waker doctor [agent...]`   | Diagnose install, auth and runtime problems |
 | `agent-waker logs [agent...]`     | Recent events; `--debug` for raw records    |
 | `agent-waker schedule set [time]` | Preview and change desired activation times |

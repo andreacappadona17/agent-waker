@@ -5,7 +5,7 @@
 // against the adapter registry and configuration validation moves with it.
 import { describeValue } from "#src/core/describe.js";
 
-export const AGENT_IDS = ["claude", "codex"] as const;
+export const AGENT_IDS = ["claude", "codex", "gemini"] as const;
 
 /** Identifies one supported coding agent. */
 export type AgentId = (typeof AGENT_IDS)[number];

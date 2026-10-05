@@ -14,7 +14,7 @@
 
 import { constants } from "node:fs";
 import { access } from "node:fs/promises";
-import { join } from "node:path";
+import { adapterWorkDirectory } from "#src/adapters/work-directory.js";
 
 import { schedulerFor, type CommandContext } from "#src/cli/context.js";
 import { EXIT, type ExitCode } from "#src/cli/exit.js";
@@ -298,7 +298,12 @@ async function agentSection(
   const adapter = context.registry.get(agentId);
   const adapterContext = {
     runner: context.runner,
-    workDir: join(context.paths.workDir, agentId),
+    workDir: adapterWorkDirectory(
+      context.paths.workDir,
+      agentId,
+      context.paths.providerHome,
+    ),
+    providerHome: context.paths.providerHome,
     now: context.environment.now(),
   };
   const checks: Check[] = [];

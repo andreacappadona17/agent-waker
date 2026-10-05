@@ -84,7 +84,7 @@ tested exactly, including timezone and daylight-saving transitions.
 
 **Never call a real provider in a test.** Tests must not consume anyone's usage
 quota. Provider behaviour is reproduced with sanitized fixtures and fake agent
-executables. A test that shells out to the real `claude` or `codex` binary will
+executables. A test that shells out to the real `claude`, `codex` or `gemini` binary will
 not be merged.
 
 **Keep policy in the core and facts in the adapters.** The core decides when an
@@ -190,3 +190,6 @@ this project prefers boring, direct code.
 ## Related
 
 - [SECURITY.md](SECURITY.md) — reporting vulnerabilities
+
+Gemini fixture provenance and pinned native controls are described in
+[Gemini adapter development](docs/gemini-cli/gemini-development.md).

@@ -35,6 +35,7 @@ describe("emptyState", () => {
       agents: {
         claude: { phase: "idle" },
         codex: { phase: "idle" },
+        gemini: { phase: "idle" },
       },
     });
   });
